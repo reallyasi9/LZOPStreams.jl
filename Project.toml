@@ -3,8 +3,14 @@ uuid = "cda889bb-a424-44da-af60-21a472ea483c"
 authors = ["Phil Killewald <reallyasi9@users.noreply.github.com> and contributors"]
 version = "1.0.0-DEV"
 
+[deps]
+LZO_jll = "dd4b983a-f0e5-5f8d-a1b7-129d4a5fb1ac"
+TranscodingStreams = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
+
 [compat]
 julia = "1"
+LZO_jll = "2.10"
+TranscodingStreams = "0.10"
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
