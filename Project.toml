@@ -8,7 +8,7 @@ LZO_jll = "dd4b983a-f0e5-5f8d-a1b7-129d4a5fb1ac"
 TranscodingStreams = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
 
 [compat]
-julia = "1"
+julia = "1.6"
 LZO_jll = "2.10"
 TranscodingStreams = "0.10"
 
