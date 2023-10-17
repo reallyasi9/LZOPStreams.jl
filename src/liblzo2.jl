@@ -25,33 +25,35 @@ function lzo_version_date()
     return unsafe_string(@ccall liblzo2.lzo_version_date()::Cstring)
 end
 
-const lzo_sizeof_dict_t = sizeof(Ptr{Cuchar})
-# The larger type of lzo_uint and lzo_uint32_t. #
-const lzo_xint = Cuint
+const Lzo_uint32_t = Cuint  # Always 4 bytes in Julia
+const Lzo_uint = Culonglong  # LZO expects this to be 8 bytes
+const Lzo_xint = sizeof(Lzo_uint32_t) > sizeof(Lzo_uint) ? Lzo_uint32_t : Lzo_uint  # The larger type of lzo_uint and lzo_uint32_t
+const Lzo_voidp = Ptr{Cvoid}
 
-struct lzo_callback_t
+const lzo_sizeof_dict_t = sizeof(Ptr{Cuchar})
+
+struct Lzo_callback_t
     nalloc::Ptr{Cvoid}
     nfree::Ptr{Cvoid}
-
     nprogress::Ptr{Cvoid}
 
-    user1::Ptr{Cvoid}
-    user2::lzo_xint
-    user3::lzo_xint
+    user1::Lzo_voidp
+    user2::Lzo_xint
+    user3::Lzo_xint
 end
 
 function lzo_init()
     version = lzo_version()
     # sizes = -1 skips check of that particular size
-    s1 = -1
-    s2 = -1
-    s3 = -1
-    s4 = -1
-    s5 = -1
-    s6 = -1
-    s7 = -1
-    s8 = -1
-    s9 = -1
+    s1 = sizeof(Cshort)
+    s2 = sizeof(Cint)
+    s3 = sizeof(Clong)
+    s4 = sizeof(Lzo_uint32_t) # always 32 bits in Julia
+    s5 = sizeof(Lzo_uint)
+    s6 = lzo_sizeof_dict_t
+    s7 = sizeof(Ptr{Cchar})
+    s8 = sizeof(Lzo_voidp)
+    s9 = sizeof(Lzo_callback_t)
 
     return @ccall liblzo2.__lzo_init_v2(version::Cuint, s1::Cint, s2::Cint, s3::Cint, s4::Cint, s5::Cint, s6::Cint, s7::Cint, s8::Cint, s9::Cint)::Cint
 end
