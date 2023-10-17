@@ -1,3 +1,25 @@
+# library type definitions
+const Lzo_uint32_t = Cuint  # Always 4 bytes in Julia
+const Lzo_uint = Csize_t
+const Lzo_xint = sizeof(Lzo_uint32_t) > sizeof(Lzo_uint) ? Lzo_uint32_t : Lzo_uint  # The larger type of lzo_uint and lzo_uint32_t
+const Lzo_voidp = Ptr{Cvoid}
+const Lzo_bytep = Ptr{Cuint}
+const Lzo_bool = Cint  # Julia does not define Cbool
+
+struct Lzo_callback_t
+    nalloc::Ptr{Cvoid}
+    nfree::Ptr{Cvoid}
+    nprogress::Ptr{Cvoid}
+
+    user1::Lzo_voidp
+    user2::Lzo_xint
+    user3::Lzo_xint
+end
+
+# library constants
+const lzo_sizeof_dict_t = sizeof(Ptr{Cuchar})
+
+# library error codes
 const LZO_E_OK = 0
 const LZO_E_ERROR = -1
 const LZO_E_OUT_OF_MEMORY = -2    # [lzo_alloc_func_t failure]
@@ -13,6 +35,7 @@ const LZO_E_INVALID_ALIGNMENT = -11   # pointer argument is not properly aligned
 const LZO_E_OUTPUT_NOT_CONSUMED = -12
 const LZO_E_INTERNAL_ERROR = -99
 
+# basic library functions
 function lzo_version()
     return @ccall liblzo2.lzo_version()::UInt
 end
@@ -25,30 +48,13 @@ function lzo_version_date()
     return unsafe_string(@ccall liblzo2.lzo_version_date()::Cstring)
 end
 
-const Lzo_uint32_t = Cuint  # Always 4 bytes in Julia
-const Lzo_uint = Culonglong  # LZO expects this to be 8 bytes
-const Lzo_xint = sizeof(Lzo_uint32_t) > sizeof(Lzo_uint) ? Lzo_uint32_t : Lzo_uint  # The larger type of lzo_uint and lzo_uint32_t
-const Lzo_voidp = Ptr{Cvoid}
-
-const lzo_sizeof_dict_t = sizeof(Ptr{Cuchar})
-
-struct Lzo_callback_t
-    nalloc::Ptr{Cvoid}
-    nfree::Ptr{Cvoid}
-    nprogress::Ptr{Cvoid}
-
-    user1::Lzo_voidp
-    user2::Lzo_xint
-    user3::Lzo_xint
-end
-
 function lzo_init()
     version = lzo_version()
-    # sizes = -1 skips check of that particular size
+    # s = -1 skips check of that particular size
     s1 = sizeof(Cshort)
     s2 = sizeof(Cint)
     s3 = sizeof(Clong)
-    s4 = sizeof(Lzo_uint32_t) # always 32 bits in Julia
+    s4 = sizeof(Lzo_uint32_t)
     s5 = sizeof(Lzo_uint)
     s6 = lzo_sizeof_dict_t
     s7 = sizeof(Ptr{Cchar})
