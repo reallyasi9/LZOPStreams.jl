@@ -15,16 +15,8 @@ import TranscodingStreams:
     finalize,
     splitkwargs
 
-using LZO_jll
-
-include("liblzo2.jl")
+include("dict.jl")
 include("compression.jl")
 include("decompression.jl")
-
-# Must be called before using the LZO library
-function __init__()
-    lzo_init()
-    nothing
-end
 
 end
