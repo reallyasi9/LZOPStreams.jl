@@ -19,9 +19,9 @@ end
 
 dictionary_type(::LZO1X1CompressorCodec) = UInt16
 dictionary_bits(::LZO1X1CompressorCodec) = 14
-dictionary_index1(c::LZOCompressorCodec, ::Integer, p::AbstractVector{UInt8}) = DM(dictionary_mask(c), (0x21 * DX3(p, 5, 5, 6)) >> 5)
-dictionary_index2(c::LZOCompressorCodec, d::Integer, ::AbstractVector{UInt8}) = d & (dictionary_mask(c) & 0x7ff) ⊻ (dictionary_high(c) | 0x1f)
-dictionary_index(c::LZOCompressorCodec, dv::Integer) = (0x1824429d * dv) >> (32 - dictionary_bits(c))
+dictionary_index1(c::LZO1X1CompressorCodec, ::Integer, p::AbstractVector{UInt8}) = DM(dictionary_mask(c), (0x21 * DX3(p, 5, 5, 6)) >> 5)
+dictionary_index2(c::LZO1X1CompressorCodec, d::Integer, ::AbstractVector{UInt8}) = d & (dictionary_mask(c) & 0x7ff) ⊻ (dictionary_high(c) | 0x1f)
+dictionary_index(c::LZO1X1CompressorCodec, dv::Integer) = (0x1824429d * dv) >> (32 - dictionary_bits(c))
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     fill!(codec.working, 0)
