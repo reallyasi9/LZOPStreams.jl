@@ -56,11 +56,54 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, input::Memory, input_star
     mask = table_size - 1
     fill!(codec.working, 0)
 
-    # the very first byte is set in the table to the first memory offset (zero)
-    codec.working[hash(get_long(input, input_start), mask)] = 0
+    # the very first byte is set in the table to the first memory index (1 in julia)
+    # NOTE: this is different from the C implementation, which uses zero-indexed pointer offsets!
+    codec.working[hash(unsafe_get(Int64, input, input_start), mask)] = 1
 
     input_idx = input_start+1
-    next_hash = hash(get_long(input, input_idx), mask)
+    next_hash = hash(unsafe_get(Int64, input, input_idx), mask)
+
+    done = false
+    first_literal = true
+    n_read = 0
+    n_written = 0
+    while !done
+        next_input_idx = input_idx
+        find_match_attempts = 1 << SKIP_TRIGGER
+        step = 1
+
+        # loop until we find a match or run out of input to match
+        while true
+            h = next_hash
+            input_idx = next_input_idx
+            next_input_idx += step
+
+            # ran out of matches to find, so emit remaining as a literal and quit
+            if next_input_idx > MATCH_FIND_LIMIT
+                r, w, status = emit_last_literal(input, input_start+n_read, output, output_start+n_written, error; first_literal = first_literal)
+                n_read += r
+                n_written += w
+                return n_read, n_written, status
+            end
+
+            # step size decreases exponentially each miss
+            step = find_match_attempts >>> SKIP_TRIGGER
+            find_match_attempts += 1
+
+            # get the index of the previous match (if any) from the working hash table
+            # (what is the index match_index such that input[match_index] begins a match of what is in the input at input[input_idx])
+            match_index = codec.working[h]
+            next_hash = hash(unsafe_get(Int64, input, next_input_idx), mask)
+
+            # put the position of the match identified by the hash onto the working hash table
+            codec.working[h] = input_idx
+
+            # if the past data matches the current data and it is the closest possible match to the current index, we have succeded
+            if unsafe_get(Int32, input, match_index) == unsafe_get(Int32, input, input_idx) && match_index + MAX_DISTANCE >= input_idx
+                break
+            end
+        end
+    end
 end
 
 function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory, output::Memory, error::Error)

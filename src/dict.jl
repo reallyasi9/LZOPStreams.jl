@@ -31,6 +31,6 @@ function max_compressed_length(in_length::Integer)
 end
 
 # Get 8 bytes from a memory object and reinterpret as a LE Int64
-function get_long(input::Memory, index::Int)
-    return ltoh(first(reinterpret(Int64, unsafe_wrap(Vector{UInt8}, input.ptr+index-1, 8))))
+function unsafe_get(::Type{T}, input::Memory, index::Int = 1) where {T}
+    return htol(first(reinterpret(T, unsafe_wrap(Vector{UInt8}, input.ptr+index-1, sizeof(T)))))
 end
