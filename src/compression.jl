@@ -103,6 +103,26 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, input::Memory, input_star
                 break
             end
         end
+
+        # everything from the input to the first match is emitted as a literal
+        # rewind the stream until the first non-matching byte is found
+        while input_idx > input_start+n_read && match_index > 1 && unsafe_get(UInt8, input, input_idx-1) == unsafe_get(UInt8, input, match_index-1)
+            input_idx -= 1
+            match_index -= 1
+        end
+
+        # now that we are back to the first non-matching byte in the input, emit everything up to the matched input as a literal
+        literal_length = input_idx - input_start - n_read
+        r, w, status = emit_literal(input, input_start+n_read, output, output_start+n_written, literal_length, error; first_literal = first_literal)
+        n_read += r
+        n_written += w
+        if status != :ok
+            return n_read, n_written, status
+        end
+        first_literal = false
+
+        
+
     end
 end
 
