@@ -1,7 +1,7 @@
-abstract type LZOCompressorCodec <: TranscodingStreams.Codec end
+abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
 
-mutable struct LZO1X1CompressorCodec <: LZOCompressorCodec
-    working::Vector{UInt8}
+mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
+    working::HashMap{Int64,Int}
     buffer::Vector{UInt8}
     buffer_used::Int
     
@@ -37,8 +37,8 @@ function compute_table_size(l::Int)
     return clamp(target, MIN_TABLE_SIZE, MAX_TABLE_SIZE)
 end
 
-function compress_chunk!(codec::LZO1X1CompressorCodec, input::Memory, input_start::Int, output::Memory, output_start::Int, error::Error)
-    input_length = length(input) - input_start + 1
+function compress_chunk!(codec::LZO1X1CompressorCodec, input::AbstractVector{UInt8}, output::AbstractVector{UInt8}, error::Error)
+    input_length = length(input)
 
     # nothing compresses to nothing
     # This should never happen
@@ -179,4 +179,43 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     
     # done: wait for next call to process
     return n_read, n_written, :ok
+end
+
+function encode_literal_length!(output::AbstractVector{UInt8}, start_index::Int, length::Int; first_literal::Bool=false)
+
+    # code 17 is used to signal the first literal value in the stream when reading back
+    if first_literal && length < (0xff - 17)
+        output[start_index] = (length+17) % UInt8
+        return 1
+    end
+
+    # 2-bit literals are encoded in the low two bits of the previous command.
+    # commands are encoded as 16-bit LEs
+    if length < 4
+        output[start_index-2] = (output[start_index-2] | length) % UInt8
+        return 0
+    end
+
+    # everything else is encoded in the strangest way possible...
+    # encode (length - 3 - RUN_MASK)/256 in unary zeros, then encode (length - 3 - RUN_MASK) % 256 as a byte
+    length -= 3
+    if length <= RUN_MASK
+        output[start_index] = length % UInt8
+        return 1
+    end
+
+    output[start_index] = 0
+    n_written = 1
+    start_index += 1
+    remaining = length - RUN_MASK
+    while remaining > 255
+        output[start_index] = 0
+        start_index += 1
+        n_written += 1
+        remaining -= 255
+    end
+    output[start_index] = remaining % UInt8
+    n_written += 1
+
+    return n_written
 end
