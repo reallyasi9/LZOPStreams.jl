@@ -33,6 +33,8 @@ struct HashMap{K<:Integer, V<:Integer}
     end
 end
 
+empty!(hm::HashMap) = fill!(hm.data, zero(eltype(hm.data)))
+
 # Perform `value * frac(a)` for `a` with a good mix of 1s and 0s in its binary representation.
 function hash(value::Integer, mask::V = -1 % V, magic_number::Int64 = _HASH_MAGIC_NUMBER, bits::Int = _HASH_BITS) where {V<:Integer}
     return ((value * magic_number >>> bits) & mask) % V
