@@ -15,7 +15,11 @@ import TranscodingStreams:
     finalize,
     splitkwargs
 
+import DataStructures:
+    CircularBuffer
+
 include("dict.jl")
+include("hashmap.jl")
 include("compression.jl")
 include("decompression.jl")
 

@@ -1,17 +1,19 @@
 abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
 
 mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
-    working::HashMap{Int64,Int}
-    buffer::Vector{UInt8}
-    buffer_used::Int
+    dictionary::HashMap{Int64,Int}
+    buffer::CircularArray{UInt8}
+    read_head::Int
+    write_head::Int
     
-    LZO1X1CompressorCodec() = new(HashMap{Int64,Int}(MAX_TABLE_SIZE), Vector{UInt8}(undef, MAX_DISTANCE), 0)
+    LZO1X1CompressorCodec() = new(HashMap{Int64,Int}(MAX_TABLE_SIZE), CircularArray(UInt8(0), MAX_DISTANCE), 1, 1)
 end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
-    fill!(codec.working, 0)
+    fill!(codec.dictionary, 0)
     fill!(codec.buffer, 0)
-    codec.buffer_used = 0
+    codec.read_head = 0
+    codec.write_head = 0
     return
 end
 
