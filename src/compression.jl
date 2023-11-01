@@ -1,35 +1,42 @@
 abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
 
 mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
-    dictionary::HashMap{Int64,Int}
+    dictionary::HashMap{Int32,Int}
+
     buffer::CircularArray{UInt8}
     read_head::Int
     write_head::Int
     
-    LZO1X1CompressorCodec() = new(HashMap{Int64,Int}(MAX_TABLE_SIZE), CircularArray(UInt8(0), MAX_DISTANCE), 1, 1)
+    first_literal::Bool
+    state::Int
+
+    LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(MAX_TABLE_SIZE), CircularArray(UInt8(0), MAX_DISTANCE), 1, 1, true, 0)
+end
+
+function remaining(codec::LZO1X1CompressorCodec)
+    return codec.write_head - codec.read_head
 end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
-    fill!(codec.dictionary, 0)
+    empty!(codec.dictionary)
     fill!(codec.buffer, 0)
-    codec.read_head = 0
-    codec.write_head = 0
+    codec.read_head = 1
+    codec.write_head = 1
+    codec.first_literal = true
+    codec.state = 0
     return
 end
 
-function buffer_input!(codec::LZO1X1CompressorCodec, input::Memory, start_idx::Int, error::Error)
-    @boundscheck if start_idx < 1 || start_idx > length(input)
-        error[] = ErrorException("input start index $start_idx out of bounds")
+function buffer_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error)
+    @boundscheck if codec.read_head < 1 || codec.write_head < 1 || codec.write_head < codec.read_head
+        error[] = ErrorException("read/write buffer heads $(codec.read_head)/$(codec.write_head) out of bounds")
         return 0, :error
     end
-    @boundscheck if codec.buffer_used < 0 || codec.buffer_used > length(codec.buffer)
-        error[] = ErrorException("buffer used $(codec.buffer_used) out of bounds")
-        return 0, :error
-    end
-    input_remaining = length(input) - start_idx + 1
-    buffer_remaining = length(codec.buffer) - codec.buffer_used
+    input_remaining = length(input)
+    buffer_remaining = min(MAX_DISTANCE - remaining(codec), 0)
     to_copy = min(input_remaining, buffer_remaining)
-    @inbounds copyto!(codec.buffer, codec.buffer_used+1, input, start_idx, to_copy)
+    @inbounds copyto!(codec.buffer, codec.write_head, input, 1, to_copy)
+    codec.write_head += to_copy
     return to_copy, :ok
 end
 
@@ -39,12 +46,13 @@ function compute_table_size(l::Int)
     return clamp(target, MIN_TABLE_SIZE, MAX_TABLE_SIZE)
 end
 
-function compress_chunk!(codec::LZO1X1CompressorCodec, input::AbstractVector{UInt8}, output::AbstractVector{UInt8}, error::Error)
-    input_length = length(input)
+function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, error::Error)
+    input_length = remaining(codec)
 
-    if input_length < 4
-        error[] = ErrorException("chunk must be at least 4 bytes, got $input_length")
-        return 0, 0, :error
+    # Every read from the dictionary requires at least 4 bytes for lookup.
+    # Ingest nothion, emit nothing, and wait for more data.
+    if input_length < MIN_MATCH
+        return 0, 0, :ok
     end
 
     # nothing compresses to nothing

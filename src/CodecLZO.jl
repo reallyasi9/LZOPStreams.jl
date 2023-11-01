@@ -15,8 +15,8 @@ import TranscodingStreams:
     finalize,
     splitkwargs
 
-import DataStructures:
-    CircularBuffer
+import CircularArrays:
+    CircularArray
 
 include("dict.jl")
 include("hashmap.jl")
