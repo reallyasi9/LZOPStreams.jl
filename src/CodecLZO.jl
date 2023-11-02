@@ -1,10 +1,7 @@
 module CodecLZO
 
 export
-    LZOCompressor,
-    LZOCompressorStream,
-    LZODecompressor,
-    LZODecompressorStream
+    LZO1X1CompressorCodec
 
 import TranscodingStreams:
     TranscodingStreams,
@@ -20,7 +17,7 @@ import CircularArrays:
 
 include("dict.jl")
 include("hashmap.jl")
-include("compression.jl")
+include("lzo1x1_compression.jl")
 include("decompression.jl")
 
 end

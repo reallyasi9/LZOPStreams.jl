@@ -12,7 +12,7 @@ empty!(hm::HashMap) = fill!(hm.data, zero(eltype(hm.data)))
 
 # Perform `value * frac(a)` for `a` with a good mix of 1s and 0s in its binary representation.
 function hash(value::Integer, mask::V = -one(Int64), magic_number::Int64 = _HASH_MAGIC_NUMBER, bits::Int = _HASH_BITS) where {V<:Integer}
-    return @inline ((value * magic_number >>> bits) & mask) % V
+    return ((value * magic_number >>> bits) & mask) % V
 end
 
 function Base.getindex(h::HashMap{K,V}, key::K, mask::V = -one(V)) where {K<:Integer, V<:Integer}

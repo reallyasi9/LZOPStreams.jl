@@ -1,40 +1,72 @@
+const LZO1X1_LAST_LITERAL_SIZE = 5  # the number of bytes in the last literal
+const LZO1X1_MIN_MATCH = 4  # the smallest number of bytes to consider in a dictionary lookup
+const LZO1X1_MAX_INPUT_SIZE = 0x7e00_0000  # 2133929216 bytes
+const LZO1X1_HASH_LOG = 12  # 1 << 12 = 4 KB maximum dictionary size
+const LZO1X1_MIN_TABLE_SIZE = 16
+const LZO1X1_MAX_TABLE_SIZE = 1 << LZO1X1_HASH_LOG
+const LZO1X1_COPY_LENGTH = 8  # copy this many bytes at a time, if possible
+const LZO1X1_MATCH_FIND_LIMIT = LZO1X1_COPY_LENGTH + LZO1X1_MIN_MATCH  # 12
+const LZO1X1_MIN_LENGTH = LZO1X1_MATCH_FIND_LIMIT + 1
+const LZO1X1_ML_BITS = 4  # match lengths can be up to 1 << 4 - 1 = 15
+const LZO1X1_RUN_BITS = 8 - ML_BITS  # runs can be up to 1 << 4 - 1 = 15
+const LZO1X1_RUN_MASK = (1 << RUN_BITS) - 1
+
+const LZO1X1_MAX_DISTANCE = 0b11000000_00000000 - 1  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
+const LZO1X1_SKIP_TRIGGER = 6  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
+
+const LZO1X1_HASH_MAGIC_NUMBER = 889523592379
+const LZO1X1_HASH_BITS = 28
+
 abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
 
+"""
+    LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
+
+A `TranscodingStreams.Codec` struct that compresses data according to the 1X1 version of the LZO algorithm.
+
+The LZO 1X1 algorithm is defined by:
+- A lookback dictionary implemented as a hash map with a maximum of size of at most `1<<12 = 4096` elements and as few as 16 elements using a specific fast hashing algorithm;
+- A 4-byte history lookup window that scans the input byte-by-byte;
+- A maximum lookback distance of `0b11000000_00000000 - 1 = 49151`;
+
+The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version therefore uses only a 4096-byte hash map as additional working memory, while this version needs to keep the full 49151 bytes of history in memory in addition to the 4096-byte hash map.
+"""
 mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
-    dictionary::HashMap{Int32,Int}
+    dictionary::HashMap{Int32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
 
-    buffer::CircularArray{UInt8}
-    read_head::Int
-    write_head::Int
+    buffer::CircularArray{UInt8} # 49151-byte history of uncompressed data read
+    write_head::Int # Index where the next byte shall be written in the buffer
     
-    first_literal::Bool
-    state::Int
+    first_literal::Bool # Whether or not the literal to be written to the output stream is the first value written, which requires special opcodes in LZO
+    state::UInt8 # 2-bit number of literal bytes to be skipped after the most recent dictionary lookup command
 
-    LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(MAX_TABLE_SIZE), CircularArray(UInt8(0), MAX_DISTANCE), 1, 1, true, 0)
+    LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(LZO1X1_MAX_TABLE_SIZE), CircularArray(UInt8(0), LZO1X1_MAX_DISTANCE), 1, true, UInt8(0))
 end
 
-function remaining(codec::LZO1X1CompressorCodec)
-    return codec.write_head - codec.read_head
+
+function full(codec::LZO1X1CompressorCodec)
+    return codec.write_head > LZO1X1_MAX_DISTANCE
 end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
     fill!(codec.buffer, 0)
-    codec.read_head = 1
     codec.write_head = 1
     codec.first_literal = true
-    codec.state = 0
+    codec.state = UInt8(0)
     return
 end
 
 function buffer_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error)
-    @boundscheck if codec.read_head < 1 || codec.write_head < 1 || codec.write_head < codec.read_head
-        error[] = ErrorException("read/write buffer heads $(codec.read_head)/$(codec.write_head) out of bounds")
+    @boundscheck if codec.write_head < 1
+        error[] = ErrorException("write buffer head $(codec.write_head) out of bounds")
         return 0, :error
     end
-    input_remaining = length(input)
-    buffer_remaining = min(MAX_DISTANCE - remaining(codec), 0)
-    to_copy = min(input_remaining, buffer_remaining)
+    @boundscheck if codec.write_head + length(input) >= LZO1X1_MAX_INPUT_SIZE
+        error[] = ErrorException("input of length $(length(input)) would result in total input size of $(codec.write_head + length(input)) > $LZO1X1_MAX_INPUT_SIZE")
+        return 0, :error
+    end
+    to_copy = min(input_remaining, LZO1X1_MAX_DISTANCE)
     @inbounds copyto!(codec.buffer, codec.write_head, input, 1, to_copy)
     codec.write_head += to_copy
     return to_copy, :ok
@@ -43,7 +75,7 @@ end
 function compute_table_size(l::Int)
     # smallest power of 2 larger than l
     target = one(l) << ((sizeof(l)*8 - leading_zeros(l-one(l))) + 1)
-    return clamp(target, MIN_TABLE_SIZE, MAX_TABLE_SIZE)
+    return clamp(target, LZO1X1_MIN_TABLE_SIZE, LZO1X1_MAX_TABLE_SIZE)
 end
 
 function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, error::Error)
@@ -51,7 +83,7 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
 
     # Every read from the dictionary requires at least 4 bytes for lookup.
     # Ingest nothion, emit nothing, and wait for more data.
-    if input_length < MIN_MATCH
+    if input_length < LZO1X1_MIN_MATCH
         return 0, 0, :ok
     end
 
@@ -62,7 +94,7 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
     # end
 
     # inputs that are smaller than the shortest lookback distance are emitted as literals
-    if input_length < MIN_LENGTH
+    if input_length < LZO1X1_MIN_LENGTH
         return emit_last_literal!(output, 1, input, error, input_length; first_literal = true)
     end
 
@@ -87,7 +119,7 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
 
         # it takes until the next power of 2 misses before the step size increases by 1 additional byte
         # (so when we have done this 1 << (SKIP_TRIGGER + 1) times, step size becomes 2, and so on)
-        find_match_attempts = 1 << SKIP_TRIGGER
+        find_match_attempts = 1 << LZO1X1_SKIP_TRIGGER
         step = 1
 
         # step forward in the input until we find a match or run out of input to match
@@ -96,7 +128,7 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
             next_input_idx += step
 
             # ran out of matches to find, so emit remaining as a literal and quit
-            if next_input_idx > MATCH_FIND_LIMIT
+            if next_input_idx > LZO1X1_MATCH_FIND_LIMIT
                 r, w, status = emit_last_literal!(output, n_written + 1, @view(input[n_read+1:end]), error; first_literal = first_literal)
                 n_read += r
                 n_written += w
@@ -104,7 +136,7 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
             end
 
             # step size increases with logarithmic misses
-            step = find_match_attempts >>> SKIP_TRIGGER
+            step = find_match_attempts >>> LZO1X1_SKIP_TRIGGER
             find_match_attempts += 1
 
             # get the index of the previous match (if any) from the working hash table
@@ -116,7 +148,7 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
             codec.working[input_long, mask] = input_idx
 
             # if the first 4 bytes of the past data matches the current data and it is within the maximum distance allowed of the input, we have succeded!
-            if reinterpret_get(Int32, input, match_index) == input_long % Int32 && match_index + MAX_DISTANCE >= input_idx
+            if reinterpret_get(Int32, input, match_index) == input_long % Int32 && match_index + LZO1X1_MAX_DISTANCE >= input_idx
                 break
             end
         end
@@ -143,12 +175,12 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
         while true
             offset = input_idx - match_index
 
-            input_idx += MIN_MATCH  # at least 4 bytes
-            match_length = count_matching_bytes(input, input_idx, match_idx + MIN_MATCH, input_length - LAST_LITERAL_SIZE)
+            input_idx += LZO1X1_MIN_MATCH  # at least 4 bytes
+            match_length = count_matching_bytes(input, input_idx, match_idx + LZO1X1_MIN_MATCH, input_length - LZO1X1_LAST_LITERAL_SIZE)
             input_idx += match_length
 
             # write the copy command to the output
-            r, w, status = emit_copy!(output, n_written+1, offset, match_length + MIN_MATCH, error)
+            r, w, status = emit_copy!(output, n_written+1, offset, match_length + LZO1X1_MIN_MATCH, error)
             n_read += r
             n_written += w
             if status != :ok
@@ -156,7 +188,7 @@ function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UI
             end
 
             input_idx += r
-            if input_idx > MATCH_FIND_LIMIT
+            if input_idx > LZO1X1_MATCH_FIND_LIMIT
                 done = true
                 break
             end
@@ -259,7 +291,7 @@ function encode_literal_length!(output::AbstractVector{UInt8}, start_index::Int,
     # everything else is encoded in the strangest way possible...
     # encode (length - 3 - RUN_MASK)/256 in unary zeros, then encode (length - 3 - RUN_MASK) % 256 as a byte
     length -= 3
-    if length <= RUN_MASK
+    if length <= LZO1X1_RUN_MASK
         output[start_index] = length % UInt8
         return 1
     end
@@ -267,7 +299,7 @@ function encode_literal_length!(output::AbstractVector{UInt8}, start_index::Int,
     output[start_index] = 0
     n_written = 1
     start_index += 1
-    remaining = length - RUN_MASK
+    remaining = length - LZO1X1_RUN_MASK
     while remaining > 255
         output[start_index] = 0
         start_index += 1
@@ -340,7 +372,7 @@ function count_matching_bytes(input::AbstractVector{UInt8}, start_index::Int, ma
 end
 
 function emit_copy!(output::AbstractVector{UInt8}, start_index::Int, offset::Int, match_length::Int, error::Error)
-    if offset > MAX_DISTANCE || offset < 1
+    if offset > LZO1X1_MAX_DISTANCE || offset < 1
         error[] = ErrorException("unsupported copy offset $offset")
         return 0, :error
     end
