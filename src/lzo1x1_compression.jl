@@ -46,7 +46,7 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
         LZO1X1_MAX_TABLE_SIZE,
         LZO1X1_HASH_MAGIC_NUMBER,
         LZO1X1_HASH_BITS),
-        CircularArray(UInt8(0), LZO1X1_MAX_DISTANCE),
+        CircularArray(UInt8(0), LZO1X1_MAX_DISTANCE + LZO1X1_MATCH_FIND_LIMIT), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         1,
         1,
         true,
@@ -56,8 +56,12 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
 end
 
 
-function full(codec::LZO1X1CompressorCodec)
+function full_buffer(codec::LZO1X1CompressorCodec)
     return codec.write_head > length(codec.buffer)
+end
+
+function remaining_to_read(codec::LZO1X1CompressorCodec)
+    return (codec.write_head - codec.read_head) % length(codec.buffer)
 end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
@@ -68,6 +72,38 @@ function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     codec.first_literal = true
     codec.state = UInt8(0)
     return
+end
+
+function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memory)
+    # If nothing has been cached, we can base this off the input alone.
+    # EOS is always 3 bytes
+    extra_bytes = 3
+    if codec.first_literal
+        if length(input) == 0
+            # An empty input produces empty output.
+            return 0
+        else if length(input) < 4
+            # We need to encode at least a single byte encoding the length, the literal itself, then potentially a three-byte EOS command.
+            return 1 + length(input) + extra_bytes
+        else
+            # Encode at least the first 4 bytes as literal plus a length byte
+            extra_bytes += 5
+        end
+    end
+
+    # The best we can possibly do with the remaining input is emit a command of some length, a single byte per 255 copies from the previous input, then a three-byte EOS command.
+    remainder = remaining_to_read(codec) + length(input)
+    if remainder <= 12
+        return 2 + extra_bytes
+    else
+        # 3 byte command plus 1 byte per 255 copies emitted
+        return 3 + remainder ÷ 255 + extra_bytes
+    end
+end
+
+function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Memory)
+    # Usually around 2:1 compression ratio with a minimum around 5 bytes
+    return max((remaining_to_read(codec) + length(input)) ÷ 2, 5)
 end
 
 function buffer_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error, from::Int = 1, len::Int = length(input))
@@ -229,6 +265,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     
     # An input length of zero signals EOF
     if input_length == 0
+        # Everything remaining in the buffer has to be flushed as a literal because it didn't match
         r, w, status = emit_last_literal!(output, 1, codec.buffer, codec.read_head, error, codec.write_head - codec.read_head; first_literal = codec.first_literal)
         codec.first_literal = false
         codec.read_head += r
