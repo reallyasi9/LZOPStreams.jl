@@ -8,8 +8,8 @@ const LZO1X1_COPY_LENGTH = 8  # copy this many bytes at a time, if possible
 const LZO1X1_MATCH_FIND_LIMIT = LZO1X1_COPY_LENGTH + LZO1X1_MIN_MATCH  # 12
 const LZO1X1_MIN_LENGTH = LZO1X1_MATCH_FIND_LIMIT + 1
 const LZO1X1_ML_BITS = 4  # match lengths can be up to 1 << 4 - 1 = 15
-const LZO1X1_RUN_BITS = 8 - ML_BITS  # runs can be up to 1 << 4 - 1 = 15
-const LZO1X1_RUN_MASK = (1 << RUN_BITS) - 1
+const LZO1X1_RUN_BITS = 8 - LZO1X1_ML_BITS  # match runs can be up to 1 << 4 - 1 = 15
+const LZO1X1_RUN_MASK = (1 << LZO1X1_RUN_BITS) - 1
 
 const LZO1X1_MAX_DISTANCE = 0b11000000_00000000 - 1  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
 const LZO1X1_SKIP_TRIGGER = 6  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
@@ -26,7 +26,7 @@ A `TranscodingStreams.Codec` struct that compresses data according to the 1X1 ve
 
 The LZO 1X1 algorithm is defined by:
 - A lookback dictionary implemented as a hash map with a maximum of size of at most `1<<12 = 4096` elements and as few as 16 elements using a specific fast hashing algorithm;
-- A 4-byte history lookup window that scans the input byte-by-byte;
+- An 8-byte history lookup window that scans the input with a logarithmically increasing skip distance;
 - A maximum lookback distance of `0b11000000_00000000 - 1 = 49151`;
 
 The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version therefore uses only a 4096-byte hash map as additional working memory, while this version needs to keep the full 49151 bytes of history in memory in addition to the 4096-byte hash map.
@@ -36,38 +36,47 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
 
     buffer::CircularArray{UInt8} # 49151-byte history of uncompressed data read
     write_head::Int # Index where the next byte shall be written in the buffer
+    read_head::Int # Index of the next byte to read from the buffer
     
     first_literal::Bool # Whether or not the literal to be written to the output stream is the first value written, which requires special opcodes in LZO
     state::UInt8 # 2-bit number of literal bytes to be skipped after the most recent dictionary lookup command
+    tries::Int # used to compute the step size each time a miss occurs in the stream
 
-    LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(LZO1X1_MAX_TABLE_SIZE), CircularArray(UInt8(0), LZO1X1_MAX_DISTANCE), 1, true, UInt8(0))
+    LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(
+        LZO1X1_MAX_TABLE_SIZE,
+        LZO1X1_HASH_MAGIC_NUMBER,
+        LZO1X1_HASH_BITS),
+        CircularArray(UInt8(0), LZO1X1_MAX_DISTANCE),
+        1,
+        1,
+        true,
+        UInt8(0),
+        1 << LZO1X1_SKIP_TRIGGER,
+    )
 end
 
 
 function full(codec::LZO1X1CompressorCodec)
-    return codec.write_head > LZO1X1_MAX_DISTANCE
+    return codec.write_head > length(codec.buffer)
 end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
     fill!(codec.buffer, 0)
     codec.write_head = 1
+    codec.read_head = 1
     codec.first_literal = true
     codec.state = UInt8(0)
     return
 end
 
-function buffer_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error)
-    @boundscheck if codec.write_head < 1
-        error[] = ErrorException("write buffer head $(codec.write_head) out of bounds")
+function buffer_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error, from::Int = 1, len::Int = length(input))
+    @boundscheck if codec.write_head + len >= LZO1X1_MAX_INPUT_SIZE
+        error[] = ErrorException("input of length $(len) would result in total input size of $(codec.write_head + len) > $LZO1X1_MAX_INPUT_SIZE")
         return 0, :error
     end
-    @boundscheck if codec.write_head + length(input) >= LZO1X1_MAX_INPUT_SIZE
-        error[] = ErrorException("input of length $(length(input)) would result in total input size of $(codec.write_head + length(input)) > $LZO1X1_MAX_INPUT_SIZE")
-        return 0, :error
-    end
-    to_copy = min(input_remaining, LZO1X1_MAX_DISTANCE)
-    @inbounds copyto!(codec.buffer, codec.write_head, input, 1, to_copy)
+    to_copy = min(len, LZO1X1_MAX_DISTANCE)
+    @inbounds copyto!(codec.buffer, codec.write_head, input, from, to_copy)
     codec.write_head += to_copy
     return to_copy, :ok
 end
@@ -81,11 +90,7 @@ end
 function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, error::Error)
     input_length = remaining(codec)
 
-    # Every read from the dictionary requires at least 4 bytes for lookup.
-    # Ingest nothion, emit nothing, and wait for more data.
-    if input_length < LZO1X1_MIN_MATCH
-        return 0, 0, :ok
-    end
+    
 
     # nothing compresses to nothing
     # This should never happen (see above)
@@ -220,54 +225,96 @@ end
 
 function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory, output::Memory, error::Error)
 
+    input_length = length(input)
+    
+    # An input length of zero signals EOF
+    if input_length == 0
+        r, w, status = emit_last_literal!(output, 1, codec.buffer, codec.read_head, error, codec.write_head - codec.read_head; first_literal = codec.first_literal)
+        codec.first_literal = false
+        codec.read_head += r
+        if status == :ok
+            status = :done
+        end
+        return r, w, status
+    end
+
+    # Every read from the dictionary requires at least 4 bytes for lookup.
+    # Ingest nothing, emit nothing, and wait for more data.
+    if input_length < LZO1X1_MIN_MATCH
+        return 0, 0, :ok
+    end
+
+    input_idx = 1
     n_read = 0
     n_written = 0
 
-    # input length of zero means reading has hit EOF, so write out all buffers
-    input_length = length(input)
-    if input_length == 0
-        r, n_written, status = compress_chunk!(codec, codec.buffer, 1, output, n_written+1, error)
-        codec.buffer_used -= r
-        if status == :ok
-            status = :end
+    # If this is the very first call to process data, mark the location in the dictionary put the first 8 bytes into the buffer for later use.
+    # Remember that the lookup table stores the read location in the buffer, not the lookback distance.
+    if codec.write_head == 1
+        # We need at least 8 bytes to put something on the lookup table.
+        if input_length < LZO1X1_COPY_LENGTH
+            return 0, 0, :ok
         end
-        return 0, n_written, status
-    end
 
-    # if the buffer has data in it, try to fill it with input
-    if codec.buffer_used > 0
-        r, status = buffer_input!(codec, input, n_read+1, error)
+        codec.dictionary[reinterpret_get(Int64, input, input_idx)] = 1
+        r, status = buffer_input!(codec, input, error, input_idx, sizeof(Int64))
         n_read += r
         if status != :ok
             return n_read, n_written, status
         end
+        input_idx += 1
     end
 
-    # if the buffer is full, dump it
-    if codec.buffer_used == length(codec.buffer_used)
-        r, w, status = compress_chunk!(codec, codec.buffer, 1, output, n_written+1, error)
-        codec.buffer_used -= r
-        n_written += w
+    # Consume input until the number of bytes remaining is less than the minimum required to find a match
+    match_idx = 0 # the location of the first 4-byte match found
+    step = 1 # The last step in number of bytes taken when looking for a match
+    while input_length - input_idx + 1 < LZO1X1_MATCH_FIND_LIMIT
+        # Find the first 4-byte match
+
+        # This is a strange part of the algorithm: it asks for a hash of an 8-byte value, but the hash map only has resolution to 28 bits, so we are sure to collide both with the 4-byte match and with a bunch of other things.
+        # It is unclear why this is 8 bytes instead of 4 bytes.
+        # Silmultaneously Load this location back onto the dictionary as the closest location of this 8-byte value so the hash only has to be calculated once.
+        input_long_value = reinterpret_get(Int64, input, input_idx)
+        match_idx = replace!(codec.dictionary, input_long_value, input_idx)
+
+        # This requires that another `step` bytes be buffered
+        r, status = buffer_input!(codec, input, error, input_idx, step)
+        n_read += r
         if status != :ok
             return n_read, n_written, status
         end
-    end
 
-    # with everything else, process one chunk at a time
-    while length(input) - n_read >= MAX_DISTANCE
-        r, w, status = compress_chunk!(codec, input, n_read+1, output, n_written+1, error)
-        n_read += r
-        n_written += w
-        if status != :ok
-            return n_read, n_written, status
+        step = codec.tries >>> LZO1X1_SKIP_TRIGGER        
+        input_idx += step
+        codec.tries += 1
+
+        # No match is easy to detect: the match index is zero
+        # Out of range matches are a bit harder to detect
+        if match_idx == 0 || codec.write_head - match_idx > LZO1X1_MAX_DISTANCE
+            continue
+        end
+
+        # At match of 4 bytes, break
+        if reinterpret_get(Int32, input, input_idx) == reinterpret_get(Int32, codec.buffer, match_idx)
+            break
         end
     end
 
-    # if anything else is left, buffer it until the next call to process
-    if length(input) - n_read > 0
-        r, status = buffer_input!(codec, input, n_read+1, error)
-        n_read += r
+    # Everything put into the buffer so far by definition did not match anything in the dictionary, so it is a literal to emit
+    r, w, status = emit_literal!(output, n_written+1, codec.buffer, codec.read_head, error, codec.write_head-codec.read_head; first_literal=codec.first_literal)
+    codec.first_literal = false
+    codec.read_head += r
+    n_written += w
+    if status != :ok
+        return n_read, n_written, status
     end
+
+    # If nothing was found, wait for the next input
+    if match_idx == 0 || codec.write_head - match_idx > LZO1X1_MAX_DISTANCE
+        return n_read, n_written, :ok
+    end
+
+    # TODO: Get length of match, output copy command with potential literal match, loop
     
     # done: wait for next call to process
     return n_read, n_written, :ok

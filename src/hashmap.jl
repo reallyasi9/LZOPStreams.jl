@@ -3,23 +3,36 @@
 # This is not an AbstractDict because one cannot iterate over values in the map.
 struct HashMap{K<:Integer, V<:Integer}
     data::Vector{V}
-    function HashMap{K,V}(length::Int) where {K<:Integer, V<:Integer}
-        return new{K,V}(zeros(V, length))
+    magic_number::Int64
+    bits::Int
+    mask::V
+    function HashMap{K,V}(size_bits::Int, magic_number::Int64 = 889523592379, precision_bits::Int = 28, mask::V = (1 << size_bits - 1) % V) where {K<:Integer, V<:Integer}
+        len = 1 << size_bits
+        return new{K,V}(zeros(V, len), magic_number, precision_bits, mask)
     end
 end
 
-empty!(hm::HashMap) = fill!(hm.data, zero(eltype(hm.data)))
+Base.empty!(hm::HashMap) = fill!(hm.data, zero(eltype(hm.data)))
+Base.resize!(hm::HashMap, nl::Integer) = resize!(hm.data, nl)
 
-# Perform `value * frac(a)` for `a` with a good mix of 1s and 0s in its binary representation.
-function hash(value::Integer, mask::V = -one(Int64), magic_number::Int64 = _HASH_MAGIC_NUMBER, bits::Int = _HASH_BITS) where {V<:Integer}
+# Perform `floor(value * frac(a))` where `a = m / 2^b` is a fixed-width decimal number of
+# fractional precision 2^b with a good mix of 1s and 0s in its binary representation.
+function hash(value::Integer, magic_number::Int64, bits::Int, mask::V) where {V<:Integer}
     return ((value * magic_number >>> bits) & mask) % V
 end
 
-function Base.getindex(h::HashMap{K,V}, key::K, mask::V = -one(V)) where {K<:Integer, V<:Integer}
-    return h.data[hash(key, mask)+1]
+function Base.getindex(h::HashMap{K,V}, key::K) where {K<:Integer, V<:Integer}
+    return h.data[hash(key, h.magic_number, h.bits, h.mask)+1]
 end
 
-function Base.setindex!(h::HashMap{K,V}, value::V, key::K, mask::V = -one(V)) where {K<:Integer, V<:Integer}
-    h.data[hash(key, mask)+1] = value
+function Base.setindex!(h::HashMap{K,V}, value::V, key::K) where {K<:Integer, V<:Integer}
+    h.data[hash(key, h.magic_number, h.bits, h.mask)+1] = value
     return h
+end
+
+function replace!(h::HashMap{K,V}, key::K, value::V) where {K<:Integer, V<:Integer}
+    idx = hash(key, h.magic_number, h.bits, h.mask)+1
+    old_value = hm.data[idx]
+    hm.data[idx] = value
+    return old_value
 end
