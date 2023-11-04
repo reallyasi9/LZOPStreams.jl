@@ -17,6 +17,8 @@ const LZO1X1_SKIP_TRIGGER = 6  # This tunes the compression ratio: higher values
 const LZO1X1_HASH_MAGIC_NUMBER = 889523592379
 const LZO1X1_HASH_BITS = 28
 
+const LZO1X1_MIN_BUFFER_LENGTH = LZO1X1_MAX_DISTANCE + LZO1X1_MATCH_FIND_LIMIT
+
 abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
 
 """
@@ -34,39 +36,32 @@ The C implementation of LZO defined by liblzo2 requires that all compressable in
 mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     dictionary::HashMap{Int32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
 
-    buffer::CircularArray{UInt8} # 49151-byte history of uncompressed data read
-    write_head::Int # Index where the next byte shall be written in the buffer
-    read_head::Int # Index of the next byte to read from the buffer
+    buffer::CircularBuffer # 49151-byte history of uncompressed input data
     
     first_literal::Bool # Whether or not the literal to be written to the output stream is the first value written, which requires special opcodes in LZO
     state::UInt8 # 2-bit number of literal bytes to be skipped after the most recent dictionary lookup command
     tries::Int # used to compute the step size each time a miss occurs in the stream
 
+    still_consuming::Bool # Whether we are still consuming input to check match length or literal length
+    literal_match::Bool # Whether the current match is a literal or a history match
+    match_length::Int # Length of the match (so far)
+
     LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(
         LZO1X1_MAX_TABLE_SIZE,
         LZO1X1_HASH_MAGIC_NUMBER,
         LZO1X1_HASH_BITS),
-        CircularArray(UInt8(0), LZO1X1_MAX_DISTANCE + LZO1X1_MATCH_FIND_LIMIT), # The circular array needs a small buffer to guarantee the next bytes read can be matched
-        1,
-        1,
+        CircularBuffer(LZO1X1_MIN_BUFFER_LENGTH), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         true,
         UInt8(0),
         1 << LZO1X1_SKIP_TRIGGER,
+        false,
+        false,
+        0,
     )
-end
-
-
-function full_buffer(codec::LZO1X1CompressorCodec)
-    return codec.write_head > length(codec.buffer)
-end
-
-function remaining_to_read(codec::LZO1X1CompressorCodec)
-    return (codec.write_head - codec.read_head) % length(codec.buffer)
 end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
-    fill!(codec.buffer, 0)
     codec.write_head = 1
     codec.read_head = 1
     codec.first_literal = true
@@ -82,7 +77,7 @@ function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memo
         if length(input) == 0
             # An empty input produces empty output.
             return 0
-        else if length(input) < 4
+        elseif length(input) < 4
             # We need to encode at least a single byte encoding the length, the literal itself, then potentially a three-byte EOS command.
             return 1 + length(input) + extra_bytes
         else
@@ -106,7 +101,19 @@ function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Me
     return max((remaining_to_read(codec) + length(input)) ÷ 2, 5)
 end
 
-function buffer_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error, from::Int = 1, len::Int = length(input))
+function load_buffer!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error, from::Int = 1, len::Int = length(input))
+    input_length = length(input)
+    
+    if input_length < buffer_free_space(codec)
+        copyto!(codec.buffer, codec.write_head, input, 1, input_length)
+        codec.write_head += input_length
+        return input_length, :ok
+    end
+
+
+    
+    # If we are in the middle of a match, we can throw away everything up to the 
+
     @boundscheck if codec.write_head + len >= LZO1X1_MAX_INPUT_SIZE
         error[] = ErrorException("input of length $(len) would result in total input size of $(codec.write_head + len) > $LZO1X1_MAX_INPUT_SIZE")
         return 0, :error
@@ -266,14 +273,25 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     # An input length of zero signals EOF
     if input_length == 0
         # Everything remaining in the buffer has to be flushed as a literal because it didn't match
-        r, w, status = emit_last_literal!(output, 1, codec.buffer, codec.read_head, error, codec.write_head - codec.read_head; first_literal = codec.first_literal)
-        codec.first_literal = false
-        codec.read_head += r
+        r, w, status = emit_last_literal!(codec, output, 1, error)
         if status == :ok
-            status = :done
+            status = :end
         end
         return r, w, status
     end
+
+    # Everything else is loaded into the buffer and consumed
+    r, status = load_buffer!(codec, input, error)
+    if status != :ok
+        return r, 0, status
+    end
+
+    # The buffer is processed and potentially data is written to output
+    w, status = process_buffer!(codec, output, error)
+
+    # We are done
+    return r, w, status
+
 
     # Every read from the dictionary requires at least 4 bytes for lookup.
     # Ingest nothing, emit nothing, and wait for more data.

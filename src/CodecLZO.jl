@@ -13,9 +13,10 @@ import TranscodingStreams:
     splitkwargs
 
 import CircularArrays:
-    CircularArray
+    CircularVector
 
 include("dict.jl")
+include("circularbuffer.jl")
 include("hashmap.jl")
 include("lzo1x1_compression.jl")
 include("decompression.jl")

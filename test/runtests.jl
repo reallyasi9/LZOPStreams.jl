@@ -1,5 +1,6 @@
 import CodecLZO:
-    HashMap
+    HashMap,
+    CircularBuffer
 
 using Test
 
@@ -55,6 +56,13 @@ using Test
             @test collisions >= 191
         end
 
+    end
+
+    @testset "CircularBuffer" begin
+        @testset "basic methods" begin
+            cb = CircularBuffer()
+            @test length(cb) == 0
+        end
     end
 
 end
