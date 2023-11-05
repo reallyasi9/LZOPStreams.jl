@@ -17,7 +17,14 @@ const LZO1X1_SKIP_TRIGGER = 6  # This tunes the compression ratio: higher values
 const LZO1X1_HASH_MAGIC_NUMBER = 889523592379
 const LZO1X1_HASH_BITS = 28
 
-const LZO1X1_MIN_BUFFER_LENGTH = LZO1X1_MAX_DISTANCE + LZO1X1_MATCH_FIND_LIMIT
+const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
+
+@enum MatchingState begin
+    FIRST_LITERAL # Waiting on end of first literal
+    HISTORY # Waiting on end of historical match
+    LITERAL_AFTER_HISTORY # Waiting to see at least 4 bytes after historical match to write copy command
+    LITERAL # Waiting on end of long literal
+end 
 
 abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
 
@@ -36,90 +43,72 @@ The C implementation of LZO defined by liblzo2 requires that all compressable in
 mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     dictionary::HashMap{Int32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
 
-    buffer::CircularBuffer # 49151-byte history of uncompressed input data
+    input_buffer::CircularVector{UInt8} # 49151-byte history of uncompressed input data
+    read_head::Int # The location of the byte to start reading (equal to the previous write_head before the buffer was refilled)
+    write_head::Int # The location of the next byte in the buffer to write (serves also to mark the end of stream if input is shorter than buffer size)
     
-    first_literal::Bool # Whether or not the literal to be written to the output stream is the first value written, which requires special opcodes in LZO
-    state::UInt8 # 2-bit number of literal bytes to be skipped after the most recent dictionary lookup command
     tries::Int # used to compute the step size each time a miss occurs in the stream
-
-    still_consuming::Bool # Whether we are still consuming input to check match length or literal length
-    literal_match::Bool # Whether the current match is a literal or a history match
-    match_length::Int # Length of the match (so far)
+    
+    state::MatchingState # Whether or not the compressor is awaiting more input to complete a match
+    match_start_index::Int # If a match is found in the history, this is the starting index
+    output_buffer::Vector{UInt8} # A buffer for matching past the end of a given input chunk (grows as needed)
+    
+    # In the case that a matching run of input ends at anything other than 4 bytes from the end of the input chunk,
+    # the literal_buffer will hold the copy command so that it can be updated with the proper number of literal copies
+    # after the input buffer is refilled.
 
     LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(
         LZO1X1_MAX_TABLE_SIZE,
         LZO1X1_HASH_MAGIC_NUMBER,
         LZO1X1_HASH_BITS),
-        CircularBuffer(LZO1X1_MIN_BUFFER_LENGTH), # The circular array needs a small buffer to guarantee the next bytes read can be matched
-        true,
-        UInt8(0),
-        1 << LZO1X1_SKIP_TRIGGER,
-        false,
-        false,
+        CircularVector(Vector{UInt8}(0x00, LZO1X1_MIN_BUFFER_SIZE)), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         0,
+        1,
+        1 << LZO1X1_SKIP_TRIGGER,
+        FIRST_LITERAL,
+        0,
+        Vector{UInt8}(),
     )
 end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
+    empty!(codec.input_buffer)
+    codec.read_head = 0
     codec.write_head = 1
-    codec.read_head = 1
-    codec.first_literal = true
-    codec.state = UInt8(0)
+    codec.tries = 1 << LZO1X1_SKIP_TRIGGER
+    codec.state = FIRST_LITERAL
+    codec.match_start_index = 0
+    empty!(codec.output_buffer)
     return
 end
 
 function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memory)
-    # If nothing has been cached, we can base this off the input alone.
-    # EOS is always 3 bytes
-    extra_bytes = 3
-    if codec.first_literal
-        if length(input) == 0
-            # An empty input produces empty output.
-            return 0
-        elseif length(input) < 4
-            # We need to encode at least a single byte encoding the length, the literal itself, then potentially a three-byte EOS command.
-            return 1 + length(input) + extra_bytes
-        else
-            # Encode at least the first 4 bytes as literal plus a length byte
-            extra_bytes += 5
-        end
-    end
-
-    # The best we can possibly do with the remaining input is emit a command of some length, a single byte per 255 copies from the previous input, then a three-byte EOS command.
-    remainder = remaining_to_read(codec) + length(input)
-    if remainder <= 12
-        return 2 + extra_bytes
+    # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety along with the output buffer
+    # Plus the appropriate commands to start a long literal or match and end the stream.
+    if codec.state == HISTORY
+        # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
+        return 1 + (codec.write_head - codec.match_start_index) ÷ 255 + 1 + 2 + 1 + length(input) ÷ 255 + 1 + length(input) + 3
     else
-        # 3 byte command plus 1 byte per 255 copies emitted
-        return 3 + remainder ÷ 255 + extra_bytes
+        # CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
+        return 1 + length(codec.output_buffer) ÷ 255 + 1 + length(codec.output_buffer) + 1 + length(input) ÷ 255 + 1 + length(input) + 3
     end
 end
 
 function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Memory)
     # Usually around 2:1 compression ratio with a minimum around 5 bytes
-    return max((remaining_to_read(codec) + length(input)) ÷ 2, 5)
+    return max((length(codec.output_buffer) + length(input)) ÷ 2, 5)
 end
 
-function load_buffer!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error, from::Int = 1, len::Int = length(input))
-    input_length = length(input)
-    
-    if input_length < buffer_free_space(codec)
-        copyto!(codec.buffer, codec.write_head, input, 1, input_length)
-        codec.write_head += input_length
-        return input_length, :ok
-    end
-
-
-    
-    # If we are in the middle of a match, we can throw away everything up to the 
-
+function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error)
+    len = length(input)
     @boundscheck if codec.write_head + len >= LZO1X1_MAX_INPUT_SIZE
         error[] = ErrorException("input of length $(len) would result in total input size of $(codec.write_head + len) > $LZO1X1_MAX_INPUT_SIZE")
         return 0, :error
     end
     to_copy = min(len, LZO1X1_MAX_DISTANCE)
-    @inbounds copyto!(codec.buffer, codec.write_head, input, from, to_copy)
+    copyto!(codec.input_buffer, codec.write_head, input, 1, input_length)
+    codec.read_head = codec.write_head
     codec.write_head += to_copy
     return to_copy, :ok
 end
@@ -130,16 +119,14 @@ function compute_table_size(l::Int)
     return clamp(target, LZO1X1_MIN_TABLE_SIZE, LZO1X1_MAX_TABLE_SIZE)
 end
 
-function compress_chunk!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, error::Error)
-    input_length = remaining(codec)
-
-    
+function compress_and_emit!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, error::Error)
+    input_length = codec.write_head - codec.read_head
 
     # nothing compresses to nothing
-    # This should never happen (see above)
-    # if input_length == 0
-    #     return 0, 0, :ok
-    # end
+    # This should never happen, as it signals EOS and that is handled elsewhere
+    if input_length == 0
+        return 0, :ok
+    end
 
     # inputs that are smaller than the shortest lookback distance are emitted as literals
     if input_length < LZO1X1_MIN_LENGTH
