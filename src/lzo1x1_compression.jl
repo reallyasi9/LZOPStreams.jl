@@ -22,7 +22,6 @@ const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
 @enum MatchingState begin
     FIRST_LITERAL # Waiting on end of first literal
     HISTORY # Waiting on end of historical match
-    LITERAL_AFTER_HISTORY # Waiting to see at least 4 bytes after historical match to write copy command
     LITERAL # Waiting on end of long literal
 end 
 
@@ -54,7 +53,7 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     output_buffer::Vector{UInt8} # A buffer for matching past the end of a given input chunk (grows as needed)
     
     # In the case that a matching run of input ends at anything other than 4 bytes from the end of the input chunk,
-    # the literal_buffer will hold the copy command so that it can be updated with the proper number of literal copies
+    # the output_buffer will hold the copy command so that it can be updated with the proper number of literal copies
     # after the input buffer is refilled.
 
     LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(
@@ -100,158 +99,130 @@ function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Me
     return max((length(codec.output_buffer) + length(input)) ÷ 2, 5)
 end
 
-function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, error::Error)
-    len = length(input)
+function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
+    while input_idx <= codec.write_head - LZO1X1_MIN_MATCH
+        input_long = reinterpret_get(Int32, codec.input_buffer, input_idx)
+        match_idx = replace!(codec.dictionary, input_long, input_idx)
+        if match_idx > 0 && input_idx - match_idx < LZO1X1_MAX_DISTANCE
+            return match_idx, input_idx
+        end
+        # TODO: figure out if this resets each match attempt or if it is a global running sum
+        input_idx += codec.tries >>> LZO1X1_SKIP_TRIGGER        
+        codec.tries += 1
+    end
+    return -1, input_idx
+end
+
+function encode_literal_length!(output, start_index::Int, length::Int; first_literal::Bool=false)
+
+    # code 17 is used to signal the first literal value in the stream when reading back
+    if first_literal && length < (0xff - 17)
+        output[start_index] = (length+17) % UInt8
+        return 1
+    end
+
+    # 2-bit literal lengths are encoded in the low two bits of the previous command.
+    # commands are encoded as 16-bit LEs
+    if length < 4
+        output[start_index-2] = (output[start_index-2] | length) % UInt8
+        return 0
+    end
+
+    # everything else is encoded in the strangest way possible...
+    # encode (length - 3 - RUN_MASK)/256 in unary zeros, then encode (length - 3 - RUN_MASK) % 256 as a byte
+    length -= 3
+    if length <= LZO1X1_RUN_MASK
+        output[start_index] = length % UInt8
+        return 1
+    end
+
+    output[start_index] = 0
+    n_written = 1
+    start_index += 1
+    remaining = length - LZO1X1_RUN_MASK
+    while remaining > 255
+        output[start_index] = 0
+        start_index += 1
+        n_written += 1
+        remaining -= 255
+    end
+    output[start_index] = remaining % UInt8
+    n_written += 1
+
+    return n_written
+end
+
+# Write a literal from `input` of length `literal_length` to `output` starting at `start_index`.
+# Note that all literals should have lengths a multiple of 8 bytes except the last literal in the stream.
+# Returns the number of bytes read from input, the number of bytes written to output, and a status symbol.
+function emit_literal!(codec::LZO1X1CompressorCodec, output, start_index::Int)
+    # TODO: detect first byte as copy command?
+    if literal_length % 8 != 0
+        error[] = ErrorException("literal length $literal_length not a multiple of 8 bytes")
+        return 0, 0, :error
+    end
+    n_written = encode_literal_length!(output, start_index, literal_length; first_literal=first_literal)
+    copyto!(output, start_index + n_written, input, 1, literal_length)
+    return literal_length, n_written + literal_length, :ok
+end
+
+function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, input_start::Int)
+    len = length(input) - input_start + 1
     @boundscheck if codec.write_head + len >= LZO1X1_MAX_INPUT_SIZE
-        error[] = ErrorException("input of length $(len) would result in total input size of $(codec.write_head + len) > $LZO1X1_MAX_INPUT_SIZE")
-        return 0, :error
+        throw(ErrorException("input of length $(len) would result in total input size of $(codec.write_head + len) > $LZO1X1_MAX_INPUT_SIZE"))
     end
     to_copy = min(len, LZO1X1_MAX_DISTANCE)
-    copyto!(codec.input_buffer, codec.write_head, input, 1, input_length)
+    copyto!(codec.input_buffer, codec.write_head, input, input_start, to_copy)
     codec.read_head = codec.write_head
     codec.write_head += to_copy
-    return to_copy, :ok
+    return to_copy
 end
 
-function compute_table_size(l::Int)
-    # smallest power of 2 larger than l
-    target = one(l) << ((sizeof(l)*8 - leading_zeros(l-one(l))) + 1)
-    return clamp(target, LZO1X1_MIN_TABLE_SIZE, LZO1X1_MAX_TABLE_SIZE)
-end
-
-function compress_and_emit!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, error::Error)
+function compress_and_emit!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, output_start::Int)
     input_length = codec.write_head - codec.read_head
 
     # nothing compresses to nothing
     # This should never happen, as it signals EOS and that is handled elsewhere
     if input_length == 0
-        return 0, :ok
+        return 0
     end
 
-    # inputs that are smaller than the shortest lookback distance are emitted as literals
-    if input_length < LZO1X1_MIN_LENGTH
-        return emit_last_literal!(output, 1, input, error, input_length; first_literal = true)
-    end
-
-    # build a working table
-    table_size = compute_table_size(input_length)
-    mask = table_size - 1
-    empty!(codec.working)
-
-    # the very first byte is set in the table to the first memory index (1 in julia)
-    # NOTE: this is different from the C implementation, which uses zero-indexed pointer offsets!
-    input_idx = 1
-    codec.working[reinterpret_get(Int64, input, input_idx), mask] = 1
-
-    input_idx += 1
-    done = false
-    first_literal = true
-    n_read = 0
+    input_idx = codec.read_head
     n_written = 0
-    while !done
-        # the index of the input we are reading to look for a match in the dictionary
-        next_input_idx = input_idx
 
-        # it takes until the next power of 2 misses before the step size increases by 1 additional byte
-        # (so when we have done this 1 << (SKIP_TRIGGER + 1) times, step size becomes 2, and so on)
-        find_match_attempts = 1 << LZO1X1_SKIP_TRIGGER
-        step = 1
-
-        # step forward in the input until we find a match or run out of input to match
-        while true
-            input_idx = next_input_idx
-            next_input_idx += step
-
-            # ran out of matches to find, so emit remaining as a literal and quit
-            if next_input_idx > LZO1X1_MATCH_FIND_LIMIT
-                r, w, status = emit_last_literal!(output, n_written + 1, @view(input[n_read+1:end]), error; first_literal = first_literal)
-                n_read += r
-                n_written += w
-                return n_read, n_written, status
+    while input_idx < codec.write_head - LZO1X1_MIN_MATCH
+        # If nothing has been written yet, load everything into the output buffer until the match is found
+        if codec.state == FIRST_LITERAL || codec.state == LITERAL
+            next_match_idx, input_idx = find_next_match!(codec, input_idx)
+            # Put everything from the read head to just before the input index into the output buffer
+            append!(codec.output_buffer, codec.input_buffer[codec.read_head:input_idx-1])
+            if codec.write_head - input_idx <= LZO1X1_MIN_MATCH
+                # If out of input, wait for more
+                return n_written
             end
-
-            # step size increases with logarithmic misses
-            step = find_match_attempts >>> LZO1X1_SKIP_TRIGGER
-            find_match_attempts += 1
-
-            # get the index of the previous match (if any) from the working hash table
-            # (what is the index match_index such that input[match_index] begins a match of what is in the input at input[input_idx])
-            input_long = reinterpret_get(Int64, input, input_idx)
-            match_index = codec.working[input_long, mask]
-
-            # update the position in the working dictionary for the next time we find this value
-            codec.working[input_long, mask] = input_idx
-
-            # if the first 4 bytes of the past data matches the current data and it is within the maximum distance allowed of the input, we have succeded!
-            if reinterpret_get(Int32, input, match_index) == input_long % Int32 && match_index + LZO1X1_MAX_DISTANCE >= input_idx
-                break
-            end
+            # Match found, meaning we have the entire literal
+            n_written += emit_literal!(codec, output, output_start + n_written)
+            codec.match_start_index = next_match_idx
+            # At this point, I have the next match in match_start_index
+            codec.state = HISTORY
         end
 
-        # everything from the input to the first match is emitted as a literal
-        # rewind the stream until the first non-matching byte is found
-        # NOTE: input_idx >= match_index, so this should always be inbounds
-        while input_idx > n_read && match_index > 1 && @inbounds input[input_idx-1] == input[match_index-1]
-            input_idx -= 1
-            match_index -= 1
+        # If we have a history lookup, find the length of the match
+        next_match_idx, input_idx = find_next_nonmatch(codec, input_idx) # one past the last matching byte
+        if codec.write_head - input_idx <= LZO1X1_MIN_MATCH
+            # If out of input, wait for more
+            return n_written
         end
 
-        # now that we are back to the first non-matching byte in the input, emit everything up to the matched input as a literal
-        literal_length = input_idx - n_read
-        r, w, status = emit_literal!(output, n_written + 1, @view(input[n_read+1:n_read+literal_length+1]), error, literal_length; first_literal = first_literal)
-        n_read += r
-        n_written += w
-        if status != :ok
-            return n_read, n_written, status
-        end
-        first_literal = false
-
-        # find the length of the match and write that to the output instead of the matched data
-        while true
-            offset = input_idx - match_index
-
-            input_idx += LZO1X1_MIN_MATCH  # at least 4 bytes
-            match_length = count_matching_bytes(input, input_idx, match_idx + LZO1X1_MIN_MATCH, input_length - LZO1X1_LAST_LITERAL_SIZE)
-            input_idx += match_length
-
-            # write the copy command to the output
-            r, w, status = emit_copy!(output, n_written+1, offset, match_length + LZO1X1_MIN_MATCH, error)
-            n_read += r
-            n_written += w
-            if status != :ok
-                return n_read, n_written, status
-            end
-
-            input_idx += r
-            if input_idx > LZO1X1_MATCH_FIND_LIMIT
-                done = true
-                break
-            end
-
-            # store where the position occured
-            position = input_idx - 2
-            codec.working[reinterpret_get(Int64, input, position), mask] = position
-
-            # test the next position and move forward until we no longer match
-            # update the match location in the working dictionary
-            input_value = reinterpret_get(Int64, input, input_idx)
-            match_index = codec.working[input_value, mask]
-            codec.working[input_value, mask] = input_idx
-
-            if match_index + MAX_DISTANCE < input_idx || reinterpret_get(Int32, input, match_index) != reinterpret_get(Int32, input, input_idx)
-                input_idx += 1
-                break
-            end
-        end
+        # This is a history copy, so emit the command, but keep the last byte of the command in the output buffer, potentially for the next literal to be emitted.
+        n_written += emit_copy!(codec, output, output_start + n_written)
+        codec.state = LITERAL
     end
 
-    # and we're done!
-    # everything else is literal data that cannot be compressed
-    r, w, status = emit_last_literal!(output, n_written + 1, @view(input[n_read+1:end]), error; first_literal = false)
-    n_read += r
-    n_written += w
-    return n_read, n_written, status
+    return n_written
+
 end
+
 
 function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory, output::Memory, error::Error)
 
@@ -260,24 +231,22 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     # An input length of zero signals EOF
     if input_length == 0
         # Everything remaining in the buffer has to be flushed as a literal because it didn't match
-        r, w, status = emit_last_literal!(codec, output, 1, error)
-        if status == :ok
-            status = :end
-        end
-        return r, w, status
+        w = emit_last_literal!(codec, output, 1)
+        return 0, w, :end
     end
 
     # Everything else is loaded into the buffer and consumed
-    r, status = load_buffer!(codec, input, error)
-    if status != :ok
-        return r, 0, status
+    n_read = 0
+    n_written = 0
+    while n_read < input_length
+        n_read += consume_input!(codec, input, n_read + 1)
+
+        # The buffer is processed and potentially data is written to output
+        n_written += compress_and_emit!(codec, output, n_written + 1)
     end
 
-    # The buffer is processed and potentially data is written to output
-    w, status = process_buffer!(codec, output, error)
-
     # We are done
-    return r, w, status
+    return n_read, n_written, :ok
 
 
     # Every read from the dictionary requires at least 4 bytes for lookup.
@@ -362,57 +331,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     return n_read, n_written, :ok
 end
 
-function encode_literal_length!(output::AbstractVector{UInt8}, start_index::Int, length::Int; first_literal::Bool=false)
 
-    # code 17 is used to signal the first literal value in the stream when reading back
-    if first_literal && length < (0xff - 17)
-        output[start_index] = (length+17) % UInt8
-        return 1
-    end
-
-    # 2-bit literal lengths are encoded in the low two bits of the previous command.
-    # commands are encoded as 16-bit LEs
-    if length < 4
-        output[start_index-2] = (output[start_index-2] | length) % UInt8
-        return 0
-    end
-
-    # everything else is encoded in the strangest way possible...
-    # encode (length - 3 - RUN_MASK)/256 in unary zeros, then encode (length - 3 - RUN_MASK) % 256 as a byte
-    length -= 3
-    if length <= LZO1X1_RUN_MASK
-        output[start_index] = length % UInt8
-        return 1
-    end
-
-    output[start_index] = 0
-    n_written = 1
-    start_index += 1
-    remaining = length - LZO1X1_RUN_MASK
-    while remaining > 255
-        output[start_index] = 0
-        start_index += 1
-        n_written += 1
-        remaining -= 255
-    end
-    output[start_index] = remaining % UInt8
-    n_written += 1
-
-    return n_written
-end
-
-# Write a literal from `input` of length `literal_length` to `output` starting at `start_index`.
-# Note that all literals should have lengths a multiple of 8 bytes except the last literal in the stream.
-# Returns the number of bytes read from input, the number of bytes written to output, and a status symbol.
-function emit_literal!(output::AbstractVector{UInt8}, start_index::Int, input::AbstractVector{UInt8}, error::Error, literal_length::Int=length(input); first_literal::Bool=false)
-    if literal_length % 8 != 0
-        error[] = ErrorException("literal length $literal_length not a multiple of 8 bytes")
-        return 0, 0, :error
-    end
-    n_written = encode_literal_length!(output, start_index, literal_length; first_literal=first_literal)
-    copyto!(output, start_index + n_written, input, 1, literal_length)
-    return literal_length, n_written + literal_length, :ok
-end
 
 # Write the last literal from `input` of length `literal_length` to `output` starting at `start_index`.
 # The last literal can be any length.
