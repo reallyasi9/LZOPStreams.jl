@@ -56,7 +56,8 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     # the output_buffer will hold the copy command so that it can be updated with the proper number of literal copies
     # after the input buffer is refilled.
 
-    previous_copy_command_was_short::Bool # Whether the prvious copy command was a short lookback (1 byte command with 2 bits of literal copy + 1 distance byte) or a long lookback (1 byte command + N distance bytes with 2 bits of literal copy at LSB position)
+    previous_copy_command_was_short::Bool # Whether the previous copy command was a short lookback (1 byte command with 2 bits of literal copy + 1 distance byte) or a long lookback (1 byte command + N distance bytes with 2 bits of literal copy at LSB position)
+    previous_literal_was_short::Bool # Whether the previous literal copy was encoded as 2 bits in the previous copy command.
 
     LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(
         LZO1X1_MAX_TABLE_SIZE,
@@ -69,6 +70,7 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
         FIRST_LITERAL,
         0,
         Vector{UInt8}(),
+        false,
         false,
     )
 end
@@ -83,6 +85,7 @@ function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     codec.match_start_index = 0
     empty!(codec.output_buffer)
     codec.previous_copy_command_was_short = false
+    codec.previous_literal_was_short = false
     return
 end
 
@@ -124,6 +127,7 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output, start_inde
     len = length(codec.output_buffer)
     if codec.state == FIRST_LITERAL && len < (0xff - 17)
         output[start_index] = (len+17) % UInt8
+        codec.previous_literal_was_short = false
         return 1
     end
 
@@ -135,11 +139,13 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output, start_inde
         output[start_index] = popfirst!(codec.output_buffer)
         output[start_index+1] = popfirst!(codec.output_buffer)
         output[start_index+idx_offset] |= length % UInt8
+        codec.previous_literal_was_short = true
         return 2
     end
 
     # everything else is encoded raw or as a run of unary zeros plus a remainder
     # raw: just store the length as a byte
+    codec.previous_literal_was_short = false
     length -= 3
     if length <= LZO1X1_RUN_MASK
         output[start_index] = length % UInt8
@@ -183,18 +189,32 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output, start_index::I
 end
 
 function emit_copy!(codec::LZO1X1CompressorCodec, output, start_index::Int, distance::Int, N::Int)
-    # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completion
+    # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
     if N == 1
         throw(ArgumentError("copy of length 1 is useless and cannot not be emitted"))
     end
 
-    if N == 2 && distance <= 1024
+    if distance == 0
+        throw(ArgumentError("copy of distance 0 is interpreted as EOS: use emit_last_literal! instead"))
+    end
+
+    if codec.previous_literal_was_short && N == 2 && distance <= 1024
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
         distance -= 1
         D = distance & 0b00000011
         H = distance - D
         output[start_index] = D << 2
         output[start_index+1] = H >> 2
+        codec.previous_copy_command_was_short = true
+        return 2
+    elseif !codec.previous_literal_was_short && N == 3 && 2049 <= distance <= 3072
+        # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 2049
+        distance -= 2049
+        D = distance & 0b00000011
+        H = distance - D
+        output[start_index] = D << 2
+        output[start_index+1] = H >> 2
+        codec.previous_copy_command_was_short = true
         return 2
     end
 end
