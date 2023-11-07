@@ -60,10 +60,10 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     previous_literal_was_short::Bool # Whether the previous literal copy was encoded as 2 bits in the previous copy command.
 
     LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(
-        LZO1X1_MAX_TABLE_SIZE,
+        LZO1X1_HASH_LOG,
         LZO1X1_HASH_MAGIC_NUMBER,
         LZO1X1_HASH_BITS),
-        CircularVector(Vector{UInt8}(0x00, LZO1X1_MIN_BUFFER_SIZE)), # The circular array needs a small buffer to guarantee the next bytes read can be matched
+        CircularVector(zeros(UInt8, LZO1X1_MIN_BUFFER_SIZE)), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         0,
         1,
         1 << LZO1X1_SKIP_TRIGGER,
@@ -77,7 +77,7 @@ end
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
-    empty!(codec.input_buffer)
+    codec.input_buffer .= 0
     codec.read_head = 0
     codec.write_head = 1
     codec.tries = 1 << LZO1X1_SKIP_TRIGGER
@@ -134,11 +134,12 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output, start_inde
     # 2-bit literal lengths are encoded in the low two bits of the previous command.
     # Commands are encoded as 16-bit LEs, and either the LSB of the 1st byte or 2nd byte are overwritten
     # depending on the length of the previous history copy.
-    if length < 6 # 4 + 2-byte command leftover in the buffer
+    @assert length(codec.output_buffer) >= 2
+    output[start_index] = popfirst!(codec.output_buffer)
+    output[start_index+1] = popfirst!(codec.output_buffer)
+    if len < 6 # 4 + 2-byte command leftover in the buffer
         idx_offset = codec.previous_copy_command_was_short ? 0 : 1
-        output[start_index] = popfirst!(codec.output_buffer)
-        output[start_index+1] = popfirst!(codec.output_buffer)
-        output[start_index+idx_offset] |= length % UInt8
+        output[start_index+idx_offset] |= len % UInt8
         codec.previous_literal_was_short = true
         return 2
     end
@@ -146,18 +147,18 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output, start_inde
     # everything else is encoded raw or as a run of unary zeros plus a remainder
     # raw: just store the length as a byte
     codec.previous_literal_was_short = false
-    length -= 3
-    if length <= LZO1X1_RUN_MASK
-        output[start_index] = length % UInt8
-        return 1
+    len -= 3
+    if len <= LZO1X1_RUN_MASK
+        output[start_index+2] = len % UInt8
+        return 3
     end
 
     # encode (length - 3 - RUN_MASK)/255 in unary zeros, then encode (length - 3 - RUN_MASK) % 255 as a byte
-    output[start_index] = 0
-    n_written = 1
-    remaining = length - LZO1X1_RUN_MASK
+    output[start_index+2] = 0 % UInt8
+    n_written = 3
+    remaining = len - LZO1X1_RUN_MASK
     while remaining > 255
-        output[start_index + n_written] = 0
+        output[start_index + n_written] = 0 % UInt8
         n_written += 1
         remaining -= 255
     end
@@ -172,7 +173,10 @@ end
 function emit_literal!(codec::LZO1X1CompressorCodec, output, start_index::Int)
     n_written = encode_literal_length!(codec, output, start_index)
     len = length(codec.output_buffer)
-    copyto!(output, start_index + n_written, codec.output_buffer, 1, len)
+    # Memory objects do not have copyto defined
+    for i in 0:len-1
+        @inbounds output[start_index + n_written + i] = codec.output_buffer[1+i]
+    end
     resize!(codec.output_buffer, 0)
     return n_written + len
 end
@@ -183,8 +187,8 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output, start_index::I
     # EOS is signaled by a long copy command (0b00010000) with a distance of exactly 16384 bytes (last two bytes == 0).
     # The length of the copy does not matter, but traditionally 3 is used (equal to 0b00000001).
     output[start_index+n_written] = 0b00010001
-    output[start_index+n_written+1] = 0
-    output[start_index+n_written+2] = 0
+    output[start_index+n_written+1] = 0 % UInt8
+    output[start_index+n_written+2] = 0 % UInt8
     return n_written + 3
 end
 
@@ -201,21 +205,73 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output, start_index::Int, dist
     if codec.previous_literal_was_short && N == 2 && distance <= 1024
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
         distance -= 1
-        D = distance & 0b00000011
-        H = distance - D
-        output[start_index] = D << 2
-        output[start_index+1] = H >> 2
+        D = UInt8(distance & 0b00000011)
+        H = UInt8(distance - D)
+        push!(codec.output_buffer, D << 2)
+        push!(codec.output_buffer, H >> 2)
         codec.previous_copy_command_was_short = true
-        return 2
+        return 0
     elseif !codec.previous_literal_was_short && N == 3 && 2049 <= distance <= 3072
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 2049
         distance -= 2049
-        D = distance & 0b00000011
-        H = distance - D
-        output[start_index] = D << 2
-        output[start_index+1] = H >> 2
+        D = UInt8(distance & 0b00000011)
+        H = UInt8(distance - D)
+        push!(codec.output_buffer, D << 2)
+        push!(codec.output_buffer, H >> 2)
         codec.previous_copy_command_was_short = true
-        return 2
+        return 0
+    elseif 3 <= N <= 4 && distance < 2049
+        # 0b01LDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
+        distance -= 1
+        D = UInt8(distance & 0b00000111)
+        H = UInt8(distance - D)
+        L = UInt8(N - 3)
+        push!(codec.output_buffer, 0b01000000 | (L << 5) | (D << 2))
+        push!(codec.output_buffer, H >> 3)
+        codec.previous_copy_command_was_short = true
+        return 0
+    elseif 5 <= N <= 8 && distance <= 2049
+        # 0b1LLDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
+        distance -= 1
+        D = UInt8(distance & 0b00000111)
+        H = UInt8(distance - D)
+        L = UInt8(N - 5)
+        push!(codec.output_buffer, 0b10000000 | (L << 5) | (D << 2))
+        push!(codec.output_buffer, H >> 3)
+        codec.previous_copy_command_was_short = true
+        return 0
+    else
+        run = 0
+        L = N - 2
+        if N < 34
+            output[start_index] = (L & 0b0001111) % UInt8
+        else
+            while L > 255
+                run += 1
+                output[start_index+run] = 0
+                L -= 255
+            end
+            run += 1
+            output[start_index+run] = L % UInt8
+        end
+
+        if distance < 16384
+            # 0b001LLLLL_*_DDDDDDDD_DDDDDDSS, distance = D + 1, length = 2 + (L ?: *)
+            output[start_index] |= 0b00100000
+            distance -= 1
+        else
+            # 0b0001HLLL_*_DDDDDDDD_DDDDDDSS, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
+            output[start_index] |= 0b00010000
+            distance -= 16384
+            H = UInt8((distance >> 14) & 1)
+            output[start_index] |= H << 3
+        end
+        DH = UInt8((distance >> 6) & 0b11111111)
+        DL = UInt8(distance & 0b00111111)
+        push!(codec.output_buffer, DH)
+        push!(codec.output_buffer, DL << 2)
+        codec.previous_copy_command_was_short = false
+        return run
     end
 end
 
@@ -225,13 +281,16 @@ function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVecto
         throw(ErrorException("input of length $(len) would result in total input size of $(codec.write_head + len) > $LZO1X1_MAX_INPUT_SIZE"))
     end
     to_copy = min(len, LZO1X1_MAX_DISTANCE)
-    copyto!(codec.input_buffer, codec.write_head, input, input_start, to_copy)
+    # Memory objects do not allow range indexing
+    for i in 0:to_copy-1
+        @inbounds codec.input_buffer[codec.write_head + i] = input[input_start + i]
+    end
     codec.read_head = codec.write_head
     codec.write_head += to_copy
     return to_copy
 end
 
-function compress_and_emit!(codec::LZO1X1CompressorCodec, output::AbstractVector{UInt8}, output_start::Int)
+function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{UInt8}, Memory}, output_start::Int)
     input_length = codec.write_head - codec.read_head
 
     # nothing compresses to nothing
@@ -256,19 +315,23 @@ function compress_and_emit!(codec::LZO1X1CompressorCodec, output::AbstractVector
             # Match found, meaning we have the entire literal
             n_written += emit_literal!(codec, output, output_start + n_written)
             codec.match_start_index = next_match_idx
+            codec.read_head = input_idx
             # At this point, I have the next match in match_start_index
             codec.state = HISTORY
         end
 
         # If we have a history lookup, find the length of the match
-        next_match_idx, input_idx = find_next_nonmatch(codec, input_idx) # one past the last matching byte
-        if codec.write_head - input_idx <= LZO1X1_MIN_MATCH
+        n_matching = count_matching(@view(codec.input_buffer[input_idx:codec.write_head-1]), @view(codec.input_buffer[codec.match_start_index:codec.write_head-1]))
+        distance = input_idx - codec.match_start_index
+        input_idx += n_matching
+        if input_idx == codec.write_head
             # If out of input, wait for more
             return n_written
         end
 
         # This is a history copy, so emit the command, but keep the last byte of the command in the output buffer, potentially for the next literal to be emitted.
-        n_written += emit_copy!(codec, output, output_start + n_written)
+        n_written += emit_copy!(codec, output, output_start + n_written, distance, n_matching)
+        codec.read_head = input_idx
         codec.state = LITERAL
     end
 
@@ -301,214 +364,15 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     # We are done
     return n_read, n_written, :ok
 
-
-    # Every read from the dictionary requires at least 4 bytes for lookup.
-    # Ingest nothing, emit nothing, and wait for more data.
-    if input_length < LZO1X1_MIN_MATCH
-        return 0, 0, :ok
-    end
-
-    input_idx = 1
-    n_read = 0
-    n_written = 0
-
-    # If this is the very first call to process data, mark the location in the dictionary put the first 8 bytes into the buffer for later use.
-    # Remember that the lookup table stores the read location in the buffer, not the lookback distance.
-    if codec.write_head == 1
-        # We need at least 8 bytes to put something on the lookup table.
-        if input_length < LZO1X1_COPY_LENGTH
-            return 0, 0, :ok
-        end
-
-        codec.dictionary[reinterpret_get(Int64, input, input_idx)] = 1
-        r, status = buffer_input!(codec, input, error, input_idx, sizeof(Int64))
-        n_read += r
-        if status != :ok
-            return n_read, n_written, status
-        end
-        input_idx += 1
-    end
-
-    # Consume input until the number of bytes remaining is less than the minimum required to find a match
-    match_idx = 0 # the location of the first 4-byte match found
-    step = 1 # The last step in number of bytes taken when looking for a match
-    while input_length - input_idx + 1 < LZO1X1_MATCH_FIND_LIMIT
-        # Find the first 4-byte match
-
-        # This is a strange part of the algorithm: it asks for a hash of an 8-byte value, but the hash map only has resolution to 28 bits, so we are sure to collide both with the 4-byte match and with a bunch of other things.
-        # It is unclear why this is 8 bytes instead of 4 bytes.
-        # Silmultaneously Load this location back onto the dictionary as the closest location of this 8-byte value so the hash only has to be calculated once.
-        input_long_value = reinterpret_get(Int64, input, input_idx)
-        match_idx = replace!(codec.dictionary, input_long_value, input_idx)
-
-        # This requires that another `step` bytes be buffered
-        r, status = buffer_input!(codec, input, error, input_idx, step)
-        n_read += r
-        if status != :ok
-            return n_read, n_written, status
-        end
-
-        step = codec.tries >>> LZO1X1_SKIP_TRIGGER        
-        input_idx += step
-        codec.tries += 1
-
-        # No match is easy to detect: the match index is zero
-        # Out of range matches are a bit harder to detect
-        if match_idx == 0 || codec.write_head - match_idx > LZO1X1_MAX_DISTANCE
-            continue
-        end
-
-        # At match of 4 bytes, break
-        if reinterpret_get(Int32, input, input_idx) == reinterpret_get(Int32, codec.buffer, match_idx)
-            break
-        end
-    end
-
-    # Everything put into the buffer so far by definition did not match anything in the dictionary, so it is a literal to emit
-    r, w, status = emit_literal!(output, n_written+1, codec.buffer, codec.read_head, error, codec.write_head-codec.read_head; first_literal=codec.first_literal)
-    codec.first_literal = false
-    codec.read_head += r
-    n_written += w
-    if status != :ok
-        return n_read, n_written, status
-    end
-
-    # If nothing was found, wait for the next input
-    if match_idx == 0 || codec.write_head - match_idx > LZO1X1_MAX_DISTANCE
-        return n_read, n_written, :ok
-    end
-
-    # TODO: Get length of match, output copy command with potential literal match, loop
-    
-    # done: wait for next call to process
-    return n_read, n_written, :ok
 end
 
-
-
-# Write the last literal from `input` of length `literal_length` to `output` starting at `start_index`.
-# The last literal can be any length.
-# Returns the number of bytes read from input, the number of bytes written to output, and a status symbol.
-function emit_last_literal!(output::AbstractVector{UInt8}, start_index::Int, input::AbstractVector{UInt8}, error::Error, literal_length::Int=length(input); first_literal::Bool=false)
-    n_written = encode_literal_length!(output, start_index, literal_length; first_literal=first_literal)
-    copyto!(output, start_index + n_written, input, 1, literal_length)
-    n_written += literal_length
-    # write stop command 0b0001HMMM with zero match offset (16 bits)
-    output[start_index + n_written] = 0b00010001
-    output[start_index + n_written + 1] = 0
-    output[start_index + n_written + 2] = 0
-    return literal_length, start_index + n_written + 3, :ok
-end
-
-function count_matching_bytes(input::AbstractVector{UInt8}, start_index::Int, match_start_index::Int, match_limit::Int)
-    current = start_index
-
+function count_matching(a::AbstractVector{T}, b::AbstractVector{T}) where {T}
     # TODO: there has to be a SIMD way to do this, but aliasing might get in the way...
-    # Try 8 bytes at a time using some magic calculations
-    while current < match_limit - (sizeof(Int64) - 1)
-        diff = reinterpret_get(Int64, input, match_start_index) ⊻ reinterpret_get(Int64, input, current)
-        # Non-matching bits found, so use the bits as a mask
-        if diff != 0
-            current += trailing_zeros(diff) >> 3
-            return current - start_index
+    n = min(length(a), length(b))
+    for i in 1:n
+        if @inbounds a[i] != b[i]
+            return i-1
         end
     end
-
-    # Try in decreasing size of integers to figure out the remainder
-    if current < match_limit - (sizeof(Int32) - 1) && reinterpret_get(Int32, input, match_start_index) == reinterpret_get(Int32, input, current)
-        current += sizeof(Int32)
-        match_start_index += sizeof(Int32)
-    end
-
-    if current < match_limit - (sizeof(Int16) - 1) && reinterpret_get(Int16, input, match_start_index) == reinterpret_get(Int16, input, current)
-        current += sizeof(Int16)
-        match_start_index += sizeof(Int16)
-    end
-
-    if current < match_limit - (sizeof(UInt8) - 1) && @inbounds input[match_start_index] == input[current]
-        current += 1
-    end
-
-    return current - start_index
-end
-
-function emit_copy!(output::AbstractVector{UInt8}, start_index::Int, offset::Int, match_length::Int, error::Error)
-    if offset > LZO1X1_MAX_DISTANCE || offset < 1
-        error[] = ErrorException("unsupported copy offset $offset")
-        return 0, :error
-    end
-
-    # small copies with small offsets pack the information into two bytes
-    if match_length <= 8 && offset <= 2048
-        # 0bMMMP_PP00 0bPPPP_PPPP
-        # M = length-1 (3 bits)
-        # P = offset-1 (11 bits)
-        # L = reserved?
-        match_length -= 1
-        offset -= 1
-        output[start_index] = ((match_length % UInt8) << 5) | ((offset % UInt8) & 0b111) << 2
-        output[start_index+1] = (offset % UInt8) >>> 3
-
-        return 2, :ok
-    end
-
-    # everything else is encoded as length-2
-    match_length -= 2
-
-    n_written = 0
-    if offset >= (1<<15)
-        # 0b0001_1MMM (0bMMMM_MMMM)* 0bPPPP_PPPP_PPPP_PPLL
-        # M = length-2 (3 + 8x bits)
-        # P = offset (14 bits)
-        # L = reserved?
-        n_written = encode_match_length!(output, start_index, match_length, 0b0000_0111, 0b0001_1000)
-    elseif offset > (1 << 14)
-        # 0b0001_0MMM (0bMMMM_MMMM)* 0bPPPP_PPPP_PPPP_PPLL
-        # M = length-2 (3 + 8x bits)
-        # P = offset (14 bits)
-        # L = reserved?
-        n_written = encode_match_length!(output, start_index, match_length, 0b0000_0111, 0b0001_0000)
-    else
-        # 0b001M_MMMM (0bMMMM_MMMM)* 0bPPPP_PPPP_PPPP_PPLL
-        # M = length-2 (5 + 8x bits)
-        # P = offset (14 bits)
-        # L = reserved?
-        n_written = encode_match_length!(output, start_index, match_length, 0b0001_1111, 0b0010_0000)
-        # this command encodes offset-1
-        offset -= 1
-    end
-
-    n_written += encode_offset!(output, start_index+n_written, offset)
-
-    return n_written, :ok
-end
-
-function encode_match_length!(output::AbstractVector{UInt8}, start_index::Int, match_length::Int, match_length_high_bits::UInt8, command::UInt8)
-    
-    if match_length < match_length_high_bits
-        # Tiny lengths just get packed in with the command
-        output[start_index] = command | match_length % UInt8
-        return 1
-    end
-
-    # Otherwise, everything but the remainder of the length minus the base is stored as zeros
-    output[start_index] = command
-    n_written = 1
-    remainder = match_length - match_length_high_bits
-    while remainder > 255
-        output[start_index+n_written] = 0
-        n_written += 1
-        remainder -= 255
-    end
-    output[start_index+n_written] = remainder % UInt8
-    n_written +=1
-    
-    return n_written
-
-end
-
-function encode_offset!(output::AbstractVector{UInt8}, start_index::Int, offset::Int)
-    output[start_index] = (offset & 0xff) % UInt8
-    output[start_index+1] = ((offset >>> 8) & 0xff) % UInt8
-    return 2
+    return n
 end

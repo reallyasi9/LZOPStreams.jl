@@ -1,7 +1,9 @@
+using CodecLZO
 import CodecLZO:
     HashMap,
-    CircularBuffer
+    consume_input!
 
+using TranscodingStreams
 using Test
 
 @testset "CodecLZO.jl" begin
@@ -58,11 +60,25 @@ using Test
 
     end
 
-    @testset "CircularBuffer" begin
-        @testset "basic methods" begin
-            cb = CircularBuffer()
-            @test length(cb) == 0
+    @testset "LZO1X1CompressorCodec" begin
+        @testset "constructor" begin
+            c = LZO1X1CompressorCodec()
         end
+
+        @testset "consume_input!" begin
+            c = LZO1X1CompressorCodec()
+            a = rand(UInt8, CodecLZO.LZO1X1_MAX_DISTANCE * 2 + 25)
+            @test consume_input!(c, a, 1) == CodecLZO.LZO1X1_MAX_DISTANCE
+            @test consume_input!(c, a, CodecLZO.LZO1X1_MAX_DISTANCE + 1) == CodecLZO.LZO1X1_MAX_DISTANCE
+            @test consume_input!(c, a, CodecLZO.LZO1X1_MAX_DISTANCE * 2 + 1) == 25
+        end
+
+        @testset "transcode" begin
+            a = b"abcdefgabcdefghijklmnopklmnopklqrstuvwabcdefghijxyyyyyz"
+            compressed = transcode(LZO1X1CompressorCodec, a)
+            @test a == UInt8[0]
+        end
+
     end
 
 end

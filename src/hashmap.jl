@@ -6,7 +6,7 @@ struct HashMap{K<:Integer, V<:Integer}
     magic_number::Int64
     bits::Int
     mask::V
-    function HashMap{K,V}(size_bits::Int, magic_number::Int64 = 889523592379, precision_bits::Int = 28, mask::V = (1 << size_bits - 1) % V) where {K<:Integer, V<:Integer}
+    function HashMap{K,V}(size_bits::Int, magic_number::Int64 = 889523592379, precision_bits::Int = 28, mask::V = ((1 << size_bits) - 1) % V) where {K<:Integer, V<:Integer}
         len = 1 << size_bits
         return new{K,V}(zeros(V, len), magic_number, precision_bits, mask)
     end
@@ -32,7 +32,7 @@ end
 
 function replace!(h::HashMap{K,V}, key::K, value::V) where {K<:Integer, V<:Integer}
     idx = hash(key, h.magic_number, h.bits, h.mask)+1
-    old_value = hm.data[idx]
-    hm.data[idx] = value
+    old_value = h.data[idx]
+    h.data[idx] = value
     return old_value
 end
