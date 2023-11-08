@@ -1,37 +1,58 @@
 # A dict-like struct that maps integers of type K into a flat vector of fixed size elements of type V
 # using the same algorithm as the LZO1X1 compressor. Default (unmatched) values are always zero.
 # This is not an AbstractDict because one cannot iterate over values in the map.
-struct HashMap{K<:Integer, V<:Integer}
+"""
+    HashMap{K,V}
+
+A super-fast dictionary-like hash table of fixed size for integer keys.
+"""
+struct HashMap{K<:Integer, V}
     data::Vector{V}
     magic_number::Int64
     bits::Int
-    mask::V
-    function HashMap{K,V}(size_bits::Int, magic_number::Int64 = 889523592379, precision_bits::Int = 28, mask::V = ((1 << size_bits) - 1) % V) where {K<:Integer, V<:Integer}
+    mask::K
+    function HashMap{K,V}(size_bits::Integer, magic_number::Int64, precision_bits::Integer) where {K<:Integer, V<:Number}
         len = 1 << size_bits
-        return new{K,V}(zeros(V, len), magic_number, precision_bits, mask)
+        bits = sizeof(K)*8 - precision_bits
+        mask = clamp(len-1, K)
+        return new{K,V}(zeros(V, len), magic_number, bits, mask)
+    end
+    function HashMap{K,V}(size_bits::Integer, magic_number::Int64, precision_bits::Integer) where {K<:Integer, V}
+        len = 1 << size_bits
+        bits = sizeof(K)*8 - precision_bits
+        mask = clamp(len-1, K)
+        return new{K,V}(Vector{V}(undef, len), magic_number, bits, mask)
     end
 end
 
 Base.empty!(hm::HashMap) = fill!(hm.data, zero(eltype(hm.data)))
-Base.resize!(hm::HashMap, nl::Integer) = resize!(hm.data, nl)
 
 # Perform `floor(value * frac(a))` where `a = m / 2^b` is a fixed-width decimal number of
 # fractional precision 2^b with a good mix of 1s and 0s in its binary representation.
-function hash(value::Integer, magic_number::Int64, bits::Int, mask::V) where {V<:Integer}
-    return ((value * magic_number >>> bits) & mask) % V
+"""
+    multiplicative_hash(value, magic_number, bits, [mask::V = typemax(UInt64)])
+
+Hash `value` into a type `V` using multiplicative hashing.
+
+This method performs `floor((value * magic_number % W) / (W / M))` where `W = 2^64`, `M = 2^m`, and
+`magic_number` is relatively prime to `W`, is large, and has a good mix of 1s and 0s in its
+binary representation. In modulo `2^64` arithmetic, this becomes `(value * magic_number) >>> m`.
+"""
+function multiplicative_hash(value::Integer, magic_number::Int64, bits::Int)
+    return value * magic_number >>> bits
 end
 
-function Base.getindex(h::HashMap{K,V}, key::K) where {K<:Integer, V<:Integer}
-    return h.data[hash(key, h.magic_number, h.bits, h.mask)+1]
+function Base.getindex(h::HashMap{K,V}, key::K) where {K<:Integer, V}
+    return h.data[multiplicative_hash(key, h.magic_number, h.bits)&h.mask+1]
 end
 
-function Base.setindex!(h::HashMap{K,V}, value::V, key::K) where {K<:Integer, V<:Integer}
-    h.data[hash(key, h.magic_number, h.bits, h.mask)+1] = value
+function Base.setindex!(h::HashMap{K,V}, value::V, key::K) where {K<:Integer, V}
+    h.data[multiplicative_hash(key, h.magic_number, h.bits)&h.mask+1] = value
     return h
 end
 
-function replace!(h::HashMap{K,V}, key::K, value::V) where {K<:Integer, V<:Integer}
-    idx = hash(key, h.magic_number, h.bits, h.mask)+1
+function replace!(h::HashMap{K,V}, key::K, value::V) where {K<:Integer, V}
+    idx = multiplicative_hash(key, h.magic_number, h.bits)&h.mask+1
     old_value = h.data[idx]
     h.data[idx] = value
     return old_value
