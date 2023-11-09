@@ -66,9 +66,14 @@ using Test
         end
 
         @testset "transcode" begin
-            a = b"abcdefgabcdefghijklmnopklmnopklqrstuvwabcdefghijxyyyyyz"
-            compressed = transcode(LZO1X1CompressorCodec, a)
-            @test a == UInt8[0]
+            compressed = transcode(LZO1X1CompressorCodec, UInt8[1, 2, 3, 4])
+            @test compressed == UInt8[22, 1, 2, 3, 4, 0b00010001, 0, 0]
+
+            compressed = transcode(LZO1X1CompressorCodec, UInt8[1, 2, 3, 4, 1, 2, 3, 4])
+            @test compressed == UInt8[22, 1, 2, 3, 4, 0b01101100, 0, 0b00010001, 0, 0]
+
+            compressed = transcode(LZO1X1CompressorCodec, UInt8[1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8])
+            @test compressed == UInt8[22, 1, 2, 3, 4, 0b01101100, 0, 0b00000001, 5, 6, 7, 8, 0b00010001, 0, 0]
         end
 
     end
