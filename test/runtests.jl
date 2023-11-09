@@ -3,8 +3,23 @@ import CodecLZO:
     HashMap,
     consume_input!
 
+using LZO_jll
 using TranscodingStreams
 using Test
+
+# required to initialize the library
+ccall((:__lzo_init_v2, liblzo2), Cint, (Cuint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint), 1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
+
+# working memory for LZO1X1
+const working_memory = zeros(UInt8, 1<<16)
+
+function lzo_compress(a::Vector{UInt8})
+    l = length(a)
+    size_ptr = Ref{Csize_t}()
+    output = Vector{UInt8}(undef, l + l>>8 + 5) # minimum safe size
+    @ccall liblzo2.lzo1x_1_compress(a::Ptr{Cuchar}, sizeof(a)::Csize_t, output::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint
+    return resize!(output, size_ptr[])
+end
 
 @testset "CodecLZO.jl" begin
 
@@ -66,14 +81,16 @@ using Test
         end
 
         @testset "transcode" begin
-            compressed = transcode(LZO1X1CompressorCodec, UInt8[1, 2, 3, 4])
-            @test compressed == UInt8[22, 1, 2, 3, 4, 0b00010001, 0, 0]
+            test_cases = [
+                "small random" => rand(UInt8, 64),
+                "large random" => rand(UInt8, CodecLZO.LZO1X1_MAX_DISTANCE),
+            ]
 
-            compressed = transcode(LZO1X1CompressorCodec, UInt8[1, 2, 3, 4, 1, 2, 3, 4])
-            @test compressed == UInt8[22, 1, 2, 3, 4, 0b01101100, 0, 0b00010001, 0, 0]
-
-            compressed = transcode(LZO1X1CompressorCodec, UInt8[1, 2, 3, 4, 1, 2, 3, 4, 5, 6, 7, 8])
-            @test compressed == UInt8[22, 1, 2, 3, 4, 0b01101100, 0, 0b00000001, 5, 6, 7, 8, 0b00010001, 0, 0]
+            for (name, val) in test_cases
+                @testset "$name" begin
+                    @test transcode(LZO1X1CompressorCodec, val) == lzo_compress(val)
+                end
+            end
         end
 
     end

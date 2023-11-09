@@ -4,7 +4,7 @@
 Reinterpret bytes from `input` as an LE-ordered value of type `T`, optionally starting at `index`.
 """
 function reinterpret_get(::Type{T}, input::AbstractVector{UInt8}, index::Int = 1) where {T}
-    return htol(only(reinterpret(T, input[index:index+sizeof(T)-1])))
+    return ltoh(only(reinterpret(T, input[index:index+sizeof(T)-1])))
 end
 
 function Base.pointer(m::Memory, i::Int = 1)
