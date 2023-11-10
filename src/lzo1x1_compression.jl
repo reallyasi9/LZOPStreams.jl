@@ -253,38 +253,38 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{U
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
         distance -= 1
         D = UInt8(distance & 0b00000011)
-        H = UInt8(distance - D)
+        H = UInt8((distance - D) >> 2)
         push!(codec.output_buffer, D << 2)
-        push!(codec.output_buffer, H >> 2)
+        push!(codec.output_buffer, H)
         codec.previous_copy_command_was_short = true
         return 0
     elseif codec.previous_literal_length >= 4 && N == 3 && 2049 <= distance <= 3072
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 2049
         distance -= 2049
         D = UInt8(distance & 0b00000011)
-        H = UInt8(distance - D)
+        H = UInt8((distance - D) >> 2)
         push!(codec.output_buffer, D << 2)
-        push!(codec.output_buffer, H >> 2)
+        push!(codec.output_buffer, H)
         codec.previous_copy_command_was_short = true
         return 0
     elseif 3 <= N <= 4 && distance < 2049
         # 0b01LDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
         distance -= 1
         D = UInt8(distance & 0b00000111)
-        H = UInt8(distance - D)
+        H = UInt8((distance - D) >> 3)
         L = UInt8(N - 3)
         push!(codec.output_buffer, 0b01000000 | (L << 5) | (D << 2))
-        push!(codec.output_buffer, H >> 3)
+        push!(codec.output_buffer, H)
         codec.previous_copy_command_was_short = true
         return 0
     elseif 5 <= N <= 8 && distance <= 2049
         # 0b1LLDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
         distance -= 1
         D = UInt8(distance & 0b00000111)
-        H = UInt8(distance - D)
+        H = UInt8((distance - D) >> 3)
         L = UInt8(N - 5)
         push!(codec.output_buffer, 0b10000000 | (L << 5) | (D << 2))
-        push!(codec.output_buffer, H >> 3)
+        push!(codec.output_buffer, H)
         codec.previous_copy_command_was_short = true
         return 0
     else

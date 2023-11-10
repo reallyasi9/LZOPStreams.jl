@@ -13,11 +13,25 @@ ccall((:__lzo_init_v2, liblzo2), Cint, (Cuint, Cint, Cint, Cint, Cint, Cint, Cin
 # working memory for LZO1X1
 const working_memory = zeros(UInt8, 1<<16)
 
+# error that tells us to resize the output array
+const LZO_E_OUTPUT_OVERRUN = -5
+
 function lzo_compress(a::Vector{UInt8})
     l = length(a)
     size_ptr = Ref{Csize_t}()
     output = Vector{UInt8}(undef, l + l>>8 + 5) # minimum safe size
     @ccall liblzo2.lzo1x_1_compress(a::Ptr{Cuchar}, sizeof(a)::Csize_t, output::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint
+    return resize!(output, size_ptr[])
+end
+
+function lzo_decompress(a::Vector{UInt8})
+    l = length(a)
+    output = Vector{UInt8}(undef, l * 2) # guess size
+    size_ptr = Ref{Csize_t}(length(output))
+    while ccall((:lzo1x_decompress, liblzo2), Cint, (Ptr{Cuchar}, Csize_t, Ptr{Cuchar}, Ptr{Csize_t}, Ptr{Cvoid}), a, sizeof(a), output, size_ptr, working_memory) == LZO_E_OUTPUT_OVERRUN
+        resize!(output, length(output) * 2)
+        size_ptr[] = length(output)
+    end
     return resize!(output, size_ptr[])
 end
 
@@ -88,7 +102,11 @@ end
 
             for (name, val) in test_cases
                 @testset "$name" begin
-                    @test transcode(LZO1X1CompressorCodec, val) == lzo_compress(val)
+                    lzo_compressed = lzo_compress(val)
+                    compressed = transcode(LZO1X1CompressorCodec, val)
+                    @test lzo_decompress(lzo_compress) == val # just to verify
+                    @test compressed == lzo_compressed
+                    @test lzo_decompress(compressed) == val
                 end
             end
         end
