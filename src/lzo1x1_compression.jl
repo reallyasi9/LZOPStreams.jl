@@ -1,12 +1,7 @@
-const LZO1X1_LAST_LITERAL_SIZE = 5  # the number of bytes in the last literal
+const LZO1X1_LAST_LITERAL_SIZE = 3  # the number of bytes in the last literal
+const LZO1X1_LAST_LITERAL_MAX_SIZE = 20 # do not try to match in history if the remaining literal is this size or less
 const LZO1X1_MIN_MATCH = 4  # the smallest number of bytes to consider in a dictionary lookup
 const LZO1X1_MAX_INPUT_SIZE = 0x7e00_0000  # 2133929216 bytes
-const LZO1X1_HASH_LOG = 12  # 1 << 12 = 4 KB maximum dictionary size
-const LZO1X1_MIN_TABLE_SIZE = 16
-const LZO1X1_MAX_TABLE_SIZE = 1 << LZO1X1_HASH_LOG
-const LZO1X1_COPY_LENGTH = 8  # copy this many bytes at a time, if possible
-const LZO1X1_MATCH_FIND_LIMIT = LZO1X1_COPY_LENGTH + LZO1X1_MIN_MATCH  # 12 bytes
-const LZO1X1_MIN_LENGTH = LZO1X1_MATCH_FIND_LIMIT + 1
 const LZO1X1_ML_BITS = 4  # 4 bits
 const LZO1X1_RUN_BITS = 8 - LZO1X1_ML_BITS  # 4 bits
 const LZO1X1_RUN_MASK = (1 << LZO1X1_RUN_BITS) - 1 # 0b00001111
@@ -14,8 +9,8 @@ const LZO1X1_RUN_MASK = (1 << LZO1X1_RUN_BITS) - 1 # 0b00001111
 const LZO1X1_MAX_DISTANCE = 0b11000000_00000000 - 1  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
 const LZO1X1_SKIP_TRIGGER = 6  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
 
-const LZO1X1_HASH_MAGIC_NUMBER = 889523592379
-const LZO1X1_HASH_BITS = 64 - 28  # The number of bits that are left after shifting in the hash calculation
+const LZO1X1_HASH_MAGIC_NUMBER = 0x1824429D
+const LZO1X1_HASH_BITS = 13  # The number of bits that are left after shifting in the hash calculation
 
 const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
 
@@ -40,7 +35,7 @@ The LZO 1X1 algorithm is defined by:
 The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version therefore uses only a 4096-byte hash map as additional working memory, while this version needs to keep the full 49151 bytes of history in memory in addition to the 4096-byte hash map.
 """
 mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
-    dictionary::HashMap{Int32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
+    dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
 
     input_buffer::CircularVector{UInt8} # 49151-byte history of uncompressed input data
     read_head::Int # The location of the byte to start reading (equal to the previous write_head before the buffer was refilled)
@@ -59,10 +54,9 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     previous_copy_command_was_short::Bool # Whether the previous copy command was a short lookback (1 byte command with 2 bits of literal copy + 1 distance byte) or a long lookback (1 byte command + N distance bytes with 2 bits of literal copy at LSB position)
     previous_literal_length::Int # The previous literal encoding length
 
-    LZO1X1CompressorCodec() = new(HashMap{Int32,Int}(
-        LZO1X1_HASH_LOG,
-        LZO1X1_HASH_MAGIC_NUMBER,
-        LZO1X1_HASH_BITS),
+    LZO1X1CompressorCodec() = new(HashMap{UInt32,Int}(
+        LZO1X1_HASH_BITS,
+        LZO1X1_HASH_MAGIC_NUMBER),
         CircularVector(zeros(UInt8, LZO1X1_MIN_BUFFER_SIZE)), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         0,
         1,
@@ -96,11 +90,11 @@ function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memo
     # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety along with the output buffer
     # plus the appropriate commands to start a long literal or match and end the stream.
     if codec.state == HISTORY
-        # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
-        return 1 + (codec.write_head - codec.match_start_index) ÷ 255 + 1 + 2 + 1 + length(input) ÷ 255 + 1 + length(input) + 3
+        # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS + buffer
+        return 1 + (codec.write_head - codec.match_start_index) ÷ 255 + 1 + 2 + 1 + length(input) ÷ 255 + 1 + length(input) + 3 + 64
     else
-        # CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
-        return 1 + length(codec.output_buffer) ÷ 255 + 1 + length(codec.output_buffer) + 1 + length(input) ÷ 255 + 1 + length(input) + 3
+        # CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS + buffer
+        return 1 + length(codec.output_buffer) ÷ 255 + 1 + length(codec.output_buffer) + 1 + length(input) ÷ 255 + 1 + length(input) + 3 + 64
     end
 end
 
@@ -145,7 +139,7 @@ end
 
 function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
     while input_idx <= codec.write_head - LZO1X1_MIN_MATCH
-        input_long = reinterpret_get(Int32, codec.input_buffer, input_idx)
+        input_long = reinterpret_get(UInt32, codec.input_buffer, input_idx)
         match_idx = replace!(codec.dictionary, input_long, input_idx)
         if match_idx > 0 && input_idx - match_idx < LZO1X1_MAX_DISTANCE
             return match_idx, input_idx
@@ -346,7 +340,7 @@ function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Union{Abstract
     input_idx = codec.read_head
     n_written = 0
 
-    while input_idx <= codec.write_head - LZO1X1_MIN_MATCH
+    while input_idx <= codec.write_head - LZO1X1_LAST_LITERAL_MAX_SIZE
         # If nothing has been written yet, load everything into the output buffer until the match is found
         if codec.state == FIRST_LITERAL || codec.state == LITERAL
             next_match_idx, input_idx = find_next_match!(codec, input_idx)
