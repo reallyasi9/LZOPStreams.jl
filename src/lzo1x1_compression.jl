@@ -137,6 +137,34 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
 
 end
 
+"""
+    n_written = encode_run(output, start_index, len, bits)
+
+Emit the number of zero bytes necessary to encode a length `len` in a command expecting `bits` leading bits.
+
+Literal and copy lengths are always encoded as either a single byte or a sequence of three or more bytes. If `len < (1 << bits)`, the length will be encoded in the lower `bits` bits of the starting byte of `output` so the return will be 0. Otherwise, the return will be the number of additional bytes needed to encode the length. The returned number of bytes does not include the zeros in the first byte (the command) used to signal that a run encoding follows, but it does include the remainder.
+
+Note: the argument `len` is expected to be the _adjusted length_ for the command. Literals use an adjusted length of `len = length(literal) - 3` and copy commands use an adjusted literal length of `len = length(copy) - 2`.
+"""
+function encode_run!(output::Union{AbstractVector{UInt8},Memory}, start_index::Int, len::Int, bits::Int)
+    if len < 1 << bits
+        output[start_index] |= len % UInt8
+        return 0
+    end
+    mask = UInt8(1 << bits - 1)
+    len -= mask
+    output[start_index] &= ~mask # clear the bits just in case
+    n_written = 0
+    while len >= 255
+        len -= 255
+        n_written += 1
+        output[start_index + n_written] = 0 % UInt8
+    end
+    n_written += 1
+    output[start_index + n_written] = len % UInt8
+    return n_written
+end
+
 function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
     while input_idx <= codec.write_head - LZO1X1_MIN_MATCH
         input_long = reinterpret_get(UInt32, codec.input_buffer, input_idx)
@@ -158,7 +186,7 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output::Union{Abst
     len = length(codec.output_buffer)
 
     if codec.state == FIRST_LITERAL && len < (0xff - 17)
-        output[start_index] = (len+18) % UInt8
+        output[index] = (len+18) % UInt8
         codec.previous_literal_length = len
         return 1
     end
@@ -170,34 +198,19 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output::Union{Abst
     # depending on the length of the previous history copy.
     output[start_index] = popfirst!(codec.output_buffer)
     output[start_index+1] = popfirst!(codec.output_buffer)
+    n_written = 2
     len -= 2
     codec.previous_literal_length = len
     if len < 4
         idx_offset = codec.previous_copy_command_was_short ? 0 : 1
         output[start_index+idx_offset] |= len % UInt8
-        return 2
+        return n_written
     end
 
     # everything else is encoded raw or as a run of unary zeros plus a remainder
-    # raw: just store the length as a byte
     len -= 3
-    if len <= LZO1X1_RUN_MASK
-        output[start_index+2] = len % UInt8
-        return 3
-    end
-
-    # encode (length - 18 - RUN_MASK)/255 in unary zeros, then encode (length - 18 - RUN_MASK) % 255 as a byte
-    output[start_index+2] = 0 % UInt8
-    n_written = 3
-    len -= LZO1X1_RUN_MASK
-    while len > 255
-        output[start_index + n_written] = 0 % UInt8
-        n_written += 1
-        len -= 255
-    end
-    output[start_index + n_written] = len % UInt8
-    n_written += 1
-
+    n_written += encode_run!(output, start_index, len, LZO1X1_RUN_BITS)
+    
     return n_written
 end
 
@@ -282,30 +295,18 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{U
         codec.previous_copy_command_was_short = true
         return 0
     else
-        run = 0
-        L = N - 2
-        if L < 0b0001111
-            output[start_index] = (L & 0b0001111) % UInt8
-        else
-            while L > 255
-                run += 1
-                output[start_index+run] = 0
-                L -= 255
-            end
-            run += 1
-            output[start_index+run] = L % UInt8
-        end
-
         if distance < 16384
             # 0b001LLLLL_*_DDDDDDDD_DDDDDDSS, distance = D + 1, length = 2 + (L ?: *)
-            @inbounds output[start_index] |= 0b00100000
+            run = encode_run!(output, start_index, N-2, 5)
+            output[start_index] |= 0b00100000
             distance -= 1
         else
             # 0b0001HLLL_*_DDDDDDDD_DDDDDDSS, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
+            run = encode_run!(output, start_index, N-2, 3)
             output[start_index] |= 0b00010000
             distance -= 16384
             H = UInt8((distance >> 14) & 1)
-            @inbounds output[start_index] |= H << 3
+            output[start_index] |= H << 3
         end
         DH = UInt8((distance >> 6) & 0b11111111)
         DL = UInt8(distance & 0b00111111)
