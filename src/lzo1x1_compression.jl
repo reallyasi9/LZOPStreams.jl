@@ -27,12 +27,12 @@ abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
 
 A `TranscodingStreams.Codec` struct that compresses data according to the 1X1 version of the LZO algorithm.
 
-The LZO 1X1 algorithm is defined by:
-- A lookback dictionary implemented as a hash map with a maximum of size of `1<<12 = 4096` elements that uses a specific fast hashing algorithm;
+The LZO 1X1 algorithm is a Lempel-Ziv lossless compression algorithm defined by:
+- A lookback dictionary implemented as a hash map with a maximum of size of `1<<12 = 4096` elements;
 - A 4-byte history lookup window that scans the input with a logarithmically increasing skip distance;
 - A maximum lookback distance of `0b11000000_00000000 - 1 = 49151` bytes;
 
-The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version therefore uses only a 4096-byte hash map as additional working memory, while this version needs to keep the full 49151 bytes of history in memory in addition to the 4096-byte hash map.
+The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version claims to use only a 4096-byte hash map as additional working memory, but it also requires that a continuous space in memory be available to hold the entire output of the compressed data, the length of which is not knowable _a priori_ but can be larger than the uncompressed data by a factor of roughly 256/255. This implementation needs to keep 49151 bytes of input history in memory in addition to the 4096-byte hash map, but only expands the output as necessary during compression.
 """
 mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
@@ -186,7 +186,7 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output::Union{Abst
     len = length(codec.output_buffer)
 
     if codec.state == FIRST_LITERAL && len < (0xff - 17)
-        output[index] = (len+18) % UInt8
+        output[start_index] = (len+17) % UInt8
         codec.previous_literal_length = len
         return 1
     end
@@ -245,11 +245,10 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Union{Abstract
     # EOS is signaled by a long copy command (0b00010000) with a distance of exactly 16384 bytes (last two bytes == 0).
     # The length of the copy does not matter, but must be between 3 and 9 (encoded in the first 3 bits of the command)
     # so that the following bytes are not interpreted as a length encoding run.
-    begin
-        output[start_index+n_written] = 0b00010001
-        output[start_index+n_written+1] = 0 % UInt8
-        output[start_index+n_written+2] = 0 % UInt8
-    end
+    output[start_index+n_written] = 0b00010001
+    output[start_index+n_written+1] = 0 % UInt8
+    output[start_index+n_written+2] = 0 % UInt8
+
     return n_written + 3
 end
 
@@ -348,6 +347,7 @@ function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Union{Abstract
 
             # Put everything from the read head to just before the input index into the output buffer
             @inbounds append!(codec.output_buffer, codec.input_buffer[codec.read_head:input_idx-1])
+            codec.read_head = input_idx
             if input_idx > codec.write_head - LZO1X1_MIN_MATCH
                 # If out of input, wait for more
                 return n_written
@@ -355,7 +355,6 @@ function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Union{Abstract
             # Match found, meaning we have the entire literal
             n_written += emit_literal!(codec, output, output_start + n_written)
             codec.match_start_index = next_match_idx
-            codec.read_head = input_idx
 
             # At this point, we have the next match in match_start_index
             codec.state = HISTORY

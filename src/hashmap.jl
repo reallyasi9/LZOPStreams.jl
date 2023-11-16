@@ -37,7 +37,7 @@ This method performs `floor((value * magic_number % W) / (W / M))` where `W = 2^
 binary representation. In modulo `2^64` arithmetic, this becomes `(value * magic_number) >>> m`.
 """
 function multiplicative_hash(value::T, magic_number::Integer, bits::Int) where {T<:Integer}
-    return (unsigned(value) * unsigned(magic_number) >>> (sizeof(value)*8 - bits)) & ((1 << bits) - 1) % T
+    return ((unsigned(value) * unsigned(magic_number)) >>> (sizeof(T)*8 - bits)) & ((1 << bits) - 1) % T
 end
 
 function Base.getindex(h::HashMap{K,V}, key::K) where {K<:Integer, V}
