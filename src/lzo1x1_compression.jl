@@ -1,12 +1,12 @@
 const LZO1X1_LAST_LITERAL_SIZE = 3  # the number of bytes in the last literal
 const LZO1X1_LAST_LITERAL_MAX_SIZE = 20 # do not try to match in history if the remaining literal is this size or less
-const LZO1X1_MIN_MATCH = 4  # the smallest number of bytes to consider in a dictionary lookup
-const LZO1X1_MAX_INPUT_SIZE = 0x7e00_0000  # 2133929216 bytes
+const LZO1X1_MIN_MATCH = sizeof(UInt32)  # the smallest number of bytes to consider in a dictionary lookup
+const LZO1X1_MAX_INPUT_SIZE = 0x7e00_0000 % Int  # 2133929216 bytes
 const LZO1X1_ML_BITS = 4  # 4 bits
 const LZO1X1_RUN_BITS = 8 - LZO1X1_ML_BITS  # 4 bits
 const LZO1X1_RUN_MASK = (1 << LZO1X1_RUN_BITS) - 1 # 0b00001111
 
-const LZO1X1_MAX_DISTANCE = 0b11000000_00000000 - 1  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
+const LZO1X1_MAX_DISTANCE = (0b11000000_00000000 - 1) % Int  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
 const LZO1X1_SKIP_TRIGGER = 6  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
 
 const LZO1X1_HASH_MAGIC_NUMBER = 0x1824429D
@@ -113,7 +113,7 @@ end
 
 function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory, output::Memory, ::Error)
 
-    input_length = length(input)
+    input_length = length(input) % Int # length(::Memory) returns a UInt for whatever reason
     
     # An input length of zero signals EOF
     if input_length == 0
@@ -166,16 +166,23 @@ function encode_run!(output::Union{AbstractVector{UInt8},Memory}, start_index::I
 end
 
 function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
+    # no match if the number of bytes remaining is too few
+    if input_idx < codec.write_head - LZO1X1_MIN_MATCH
+        return -1, input_idx
+    end
+
     while input_idx <= codec.write_head - LZO1X1_MIN_MATCH
         input_long = reinterpret_get(UInt32, codec.input_buffer, input_idx)
         match_idx = replace!(codec.dictionary, input_long, input_idx)
-        if match_idx > 0 && input_idx - match_idx < LZO1X1_MAX_DISTANCE
+        if match_idx > 0 && input_idx - match_idx < LZO1X1_MAX_DISTANCE && input_long == reinterpret_get(UInt32, codec.input_buffer, match_idx)
             return match_idx, input_idx
         end
         # TODO: figure out if this resets each match attempt or if it is a global running sum
         input_idx += codec.tries >>> LZO1X1_SKIP_TRIGGER        
         codec.tries += 1
     end
+    # the input_idx might have skipped beyond the write head, so clamp it
+    input_idx = min(input_idx, codec.write_head - LZO1X1_MIN_MATCH + 1)
     return -1, input_idx
 end
 
@@ -185,10 +192,15 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output::Union{Abst
     # specially coded.
     len = length(codec.output_buffer)
 
-    if codec.state == FIRST_LITERAL && len < (0xff - 17)
-        output[start_index] = (len+17) % UInt8
-        codec.previous_literal_length = len
-        return 1
+    if codec.state == FIRST_LITERAL 
+        if len < (0xff - 17)
+            output[start_index] = (len+17) % UInt8
+            codec.previous_literal_length = len
+            return 1
+        else
+            output[start_index] = 0 % UInt8
+            return encode_run!(output, start_index, len-3, 4)
+        end
     end
 
     # Except for the first literal, literal copies always follow history copies, so a command should always be in the buffer.
@@ -317,7 +329,7 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{U
 end
 
 function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, input_start::Int)
-    len = length(input) - input_start + 1
+    len = (length(input) - input_start + 1) % Int # length(input) is UInt
     to_copy = min(len, LZO1X1_MAX_DISTANCE)
     # Memory objects do not allow range indexing, and circular vectors do not allow copyto!
     for i in 0:to_copy-1

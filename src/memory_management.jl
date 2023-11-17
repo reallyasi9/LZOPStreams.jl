@@ -1,10 +1,16 @@
 """
     reinterpret_get(T::Type, input::AbstractVector{UInt8}, [index::Int = 1])::T
 
-Reinterpret bytes from `input` as an LE-ordered value of type `T`, optionally starting at `index`.
+Reinterpret bytes from `input` as an LE-ordered value of type `T`, optionally starting at `index`. This tries to be faster than `reinterpret(T, input[index:index+sizeof(T)-1])`.
 """
-function reinterpret_get(::Type{T}, input::AbstractVector{UInt8}, index::Int = 1) where {T}
-    return ltoh(only(reinterpret(T, input[index:index+sizeof(T)-1])))
+function reinterpret_get(::Type{T}, input::AbstractVector{UInt8}, index::Int = 1) where {T<:Integer}
+    @boundscheck checkbounds(input, index + sizeof(T) - 1)
+    out = zero(T)
+    @inbounds for i in 0:sizeof(T)-1
+        out |= input[index + i]
+        out = bitrotate(out, -8)
+    end
+    return out
 end
 
 function Base.pointer(m::Memory, i::Int = 1)
@@ -43,8 +49,8 @@ Equivalent to `findfirst(a .!= b)`, but faster and limiting itself to the first 
 function count_matching(a::AbstractVector{T}, b::AbstractVector{T}) where {T}
     # TODO: there has to be a SIMD way to do this, but aliasing might get in the way...
     n = min(length(a), length(b))
-    for i in 1:n
-        if @inbounds a[i] != b[i]
+    @inbounds for i in 1:n
+        if a[i] != b[i]
             return i-1
         end
     end
