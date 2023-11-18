@@ -169,10 +169,6 @@ function encode_run!(output::Union{AbstractVector{UInt8},Memory}, start_index::I
 end
 
 function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
-    # no match if the number of bytes remaining is too few
-    if input_idx < codec.write_head - LZO1X1_MIN_MATCH
-        return -1, input_idx
-    end
 
     while input_idx <= codec.write_head - LZO1X1_MIN_MATCH
         input_long = reinterpret_get(UInt32, codec.input_buffer, input_idx)
