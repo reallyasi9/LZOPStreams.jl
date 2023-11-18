@@ -7,7 +7,7 @@ const LZO1X1_RUN_BITS = 8 - LZO1X1_ML_BITS  # 4 bits
 const LZO1X1_RUN_MASK = (1 << LZO1X1_RUN_BITS) - 1 # 0b00001111
 
 const LZO1X1_MAX_DISTANCE = (0b11000000_00000000 - 1) % Int  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
-const LZO1X1_SKIP_TRIGGER = 6  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
+const LZO1X1_SKIP_TRIGGER = 5  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
 
 const LZO1X1_HASH_MAGIC_NUMBER = 0x1824429D
 const LZO1X1_HASH_BITS = 13  # The number of bits that are left after shifting in the hash calculation
@@ -41,8 +41,6 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
     read_head::Int # The location of the byte to start reading (equal to the previous write_head before the buffer was refilled)
     write_head::Int # The location of the next byte in the buffer to write (serves also to mark the end of stream if input is shorter than buffer size)
     
-    tries::Int # used to compute the step size each time a miss occurs in the stream
-    
     state::MatchingState # Whether or not the compressor is awaiting more input to complete a match
     match_start_index::Int # If a match is found in the history, this is the starting index
     output_buffer::Vector{UInt8} # A buffer for matching past the end of a given input chunk (grows as needed)
@@ -60,7 +58,6 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
         CircularVector(zeros(UInt8, LZO1X1_MIN_BUFFER_SIZE)), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         0,
         1,
-        1 << LZO1X1_SKIP_TRIGGER,
         FIRST_LITERAL,
         0,
         Vector{UInt8}(),
@@ -77,7 +74,6 @@ function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     codec.input_buffer .= 0
     codec.read_head = 0
     codec.write_head = 1
-    codec.tries = 1 << LZO1X1_SKIP_TRIGGER
     codec.state = FIRST_LITERAL
     codec.match_start_index = 0
     empty!(codec.output_buffer)
@@ -177,9 +173,8 @@ function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
         if match_idx > 0 && input_idx - match_idx < LZO1X1_MAX_DISTANCE && input_long == reinterpret_get(UInt32, codec.input_buffer, match_idx)
             return match_idx, input_idx
         end
-        # TODO: figure out if this resets each match attempt or if it is a global running sum
-        input_idx += codec.tries >>> LZO1X1_SKIP_TRIGGER        
-        codec.tries += 1
+        # The window jumps proportional to the number of bytes read this round
+        input_idx += ((codec.input_idx - codec.read_head) >> LZO1X1_SKIP_TRIGGER) + 1
     end
     # the input_idx might have skipped beyond the write head, so clamp it
     input_idx = min(input_idx, codec.write_head - LZO1X1_MIN_MATCH + 1)
