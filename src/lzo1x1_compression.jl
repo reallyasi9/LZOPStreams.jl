@@ -133,6 +133,13 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
 
 end
 
+function TranscodingStreams.finalize(codec::LZO1X1CompressorCodec)
+    # doesn't matter much, but might as well release memory
+    empty!(codec.input_buffer.data)
+    empty!(codec.output_buffer)
+    return
+end
+
 """
     n_written = encode_run(output, start_index, len, bits)
 
