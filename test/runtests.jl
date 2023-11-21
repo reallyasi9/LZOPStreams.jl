@@ -78,7 +78,7 @@ end
         working_memory = zeros(UInt8, 1 << 16)
         l = length(a)
         size_ptr = Ref{Csize_t}()
-        output = Vector{UInt8}(undef, l + l >> 8 + 5) # minimum safe size
+        output = Vector{UInt8}(undef, l + l ÷ 255 + 5) # minimum safe size
         @ccall liblzo2.lzo1x_1_compress(a::Ptr{Cuchar}, sizeof(a)::Csize_t, output::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint
         return resize!(output, size_ptr[])
     end

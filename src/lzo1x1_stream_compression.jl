@@ -56,7 +56,7 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
         LZO1X1_HASH_BITS,
         LZO1X1_HASH_MAGIC_NUMBER),
         CircularVector(zeros(UInt8, LZO1X1_MIN_BUFFER_SIZE)), # The circular array needs a small buffer to guarantee the next bytes read can be matched
-        0,
+        1,
         1,
         FIRST_LITERAL,
         0,
@@ -72,7 +72,7 @@ const LZOCompressorStream{S} = TranscodingStream{LZO1X1CompressorCodec,S}
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
     codec.input_buffer .= 0
-    codec.read_head = 0
+    codec.read_head = 1
     codec.write_head = 1
     codec.state = FIRST_LITERAL
     codec.match_start_index = 0
@@ -86,11 +86,11 @@ function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memo
     # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety along with the output buffer
     # plus the appropriate commands to start a long literal or match and end the stream.
     if codec.state == HISTORY
-        # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS + buffer
-        return 1 + (codec.write_head - codec.match_start_index) ÷ 255 + 1 + 2 + 1 + length(input) ÷ 255 + 1 + length(input) + 3 + 64
+        # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
+        return 1 + (codec.write_head - codec.match_start_index) ÷ 255 + 1 + 2 + 1 + length(input) ÷ 255 + 1 + length(input) + 3
     else
         # CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS + buffer
-        return 1 + length(codec.output_buffer) ÷ 255 + 1 + length(codec.output_buffer) + 1 + length(input) ÷ 255 + 1 + length(input) + 3 + 64
+        return 1 + length(codec.output_buffer) ÷ 255 + 1 + length(codec.output_buffer) + 1 + length(input) ÷ 255 + 1 + length(input) + 3
     end
 end
 
@@ -152,20 +152,19 @@ Note: the argument `len` is expected to be the _adjusted length_ for the command
 function encode_run!(output::Union{AbstractVector{UInt8},Memory}, start_index::Int, len::Int, bits::Int)
     if len < 1 << bits
         output[start_index] |= len % UInt8
-        return 0
+        return 1
     end
     mask = UInt8(1 << bits - 1)
     len -= mask
     output[start_index] &= ~mask # clear the bits just in case
-    n_written = 0
+    n_written = 1
     while len >= 255
         len -= 255
-        n_written += 1
         output[start_index + n_written] = 0 % UInt8
+        n_written += 1
     end
-    n_written += 1
     output[start_index + n_written] = len % UInt8
-    return n_written
+    return n_written + 1
 end
 
 function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
@@ -177,7 +176,7 @@ function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
             return match_idx, input_idx
         end
         # The window jumps proportional to the number of bytes read this round
-        input_idx += ((codec.input_idx - codec.read_head) >> LZO1X1_SKIP_TRIGGER) + 1
+        input_idx += ((input_idx - codec.read_head) >> LZO1X1_SKIP_TRIGGER) + 1
     end
     # the input_idx might have skipped beyond the write head, so clamp it
     input_idx = min(input_idx, codec.write_head - LZO1X1_MIN_MATCH + 1)
@@ -333,7 +332,6 @@ function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVecto
     for i in 0:to_copy-1
         @inbounds codec.input_buffer[codec.write_head + i] = input[input_start + i]
     end
-    codec.read_head = codec.write_head
     codec.write_head += to_copy
     return to_copy
 end
