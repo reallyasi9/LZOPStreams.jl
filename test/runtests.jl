@@ -98,7 +98,7 @@ end
     end
 
     let
-        rng = Random.Xoshiro(42)
+        rng = Random.MersenneTwister(42)
         small_random = rand(rng, UInt8, 24)
         limit_random = rand(rng, UInt8, CodecLZO.LZO1X1_MAX_DISTANCE + 1)
         large_random = rand(rng, UInt8, 1_000_000)
