@@ -17,6 +17,6 @@ import CircularArrays:
 include("memory_management.jl")
 include("hashmap.jl")
 include("lzo1x1_stream_compression.jl")
-include("decompression.jl")
+include("lzo1x1_stream_decompression.jl")
 
 end
