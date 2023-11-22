@@ -29,7 +29,7 @@ A `TranscodingStreams.Codec` struct that compresses data according to the 1X1 ve
 
 The LZO 1X1 algorithm is a Lempel-Ziv lossless compression algorithm defined by:
 - A lookback dictionary implemented as a hash map with a maximum of size of `1<<12 = 4096` elements;
-- A 4-byte history lookup window that scans the input with a logarithmically increasing skip distance;
+- A 4-byte history lookup window that scans the input with a skip distance that increases linearly with the number of misses;
 - A maximum lookback distance of `0b11000000_00000000 - 1 = 49151` bytes;
 
 The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version claims to use only a 4096-byte hash map as additional working memory, but it also requires that a continuous space in memory be available to hold the entire output of the compressed data, the length of which is not knowable _a priori_ but can be larger than the uncompressed data by a factor of roughly 256/255. This implementation needs to keep 49151 bytes of input history in memory in addition to the 4096-byte hash map, but only expands the output as necessary during compression.
@@ -95,8 +95,8 @@ function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memo
 end
 
 function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Memory)
-    # Usually around 2.4:1 compression ratio with a minimum around 5 bytes (see https://morotti.github.io/lzbench-web)
-    return max((length(codec.output_buffer) + length(input)) ÷ 2, 5)
+    # Usually around 2.4:1 compression ratio with a minimum of 24 bytes (see https://morotti.github.io/lzbench-web)
+    return max((length(codec.output_buffer) + length(input)) ÷ 2, 24)
 end
 
 function TranscodingStreams.startproc(codec::LZO1X1CompressorCodec, mode::Symbol, error::Error)
@@ -134,9 +134,8 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
 end
 
 function TranscodingStreams.finalize(codec::LZO1X1CompressorCodec)
-    # doesn't matter much, but might as well release memory
-    empty!(codec.input_buffer.data)
     empty!(codec.output_buffer)
+    empty!(codec.input_buffer.data)
     return
 end
 
@@ -158,7 +157,7 @@ function encode_run!(output::Union{AbstractVector{UInt8},Memory}, start_index::I
     len -= mask
     output[start_index] &= ~mask # clear the bits just in case
     n_written = 1
-    while len >= 255
+    while len > 255
         len -= 255
         output[start_index + n_written] = 0 % UInt8
         n_written += 1
