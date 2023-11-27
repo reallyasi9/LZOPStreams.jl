@@ -39,6 +39,21 @@ function Base.copyto!(dest::AbstractVector{UInt8}, di::Integer, src::Memory, si:
     return dest
 end
 
+function Base.copyto!(dest::CircularVector{UInt8}, di::Integer, src::Union{Memory, AbstractVector{UInt8}}, si::Integer, N::Integer)
+    @inbounds for i in 0:N-1
+        dest[di+i] = src[si+i]
+    end
+    return dest
+end
+
+function Base.copyto!(dest::Union{Memory, AbstractVector{UInt8}}, di::Integer, src::CircularVector{UInt8}, si::Integer, N::Integer)
+    @boundscheck checkbounds(dest, di + N - 1)
+    @inbounds for i in 0:N-1
+        dest[di+i] = src[si+i]
+    end
+    return dest
+end
+
 """
     count_matching(a::AbstractVector, b::AbstractVector)
 
