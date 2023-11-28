@@ -2,12 +2,26 @@
 
 @enum DecompressionState begin
     BEFORE_FIRST_LITERAL
-    READING_RUN
-    READING_DISTANCE
+    AWAITING_COMMAND
     READING_LITERAL
-    IDLE
     END_OF_STREAM
 end
+
+struct LiteralCopyCommand
+    command_length::Int
+    copy_length::Int
+end
+
+struct HistoryCopyCommand
+    command_length::Int
+    lookback::Int
+    copy_length::Int
+    post_copy_literals::UInt8
+end
+
+const NULL_LITERAL_COMMAND = LiteralCopyCommand(0, 0)
+const NULL_HISTORY_COMMAND = HistoryCopyCommand(0, 0, 0, 0)
+const END_OF_STREAM_COMMAND = HistoryCopyCommand(3, 0, 3, 0)
 
 abstract type AbstractLZODecompressorCodec <: TranscodingStreams.Codec end
 
@@ -32,10 +46,6 @@ mutable struct LZO1X1DecompressorCodec <: AbstractLZODecompressorCodec
     
     state::DecompressionState # The very first literal is encoded differently from the others
 
-    command::UInt8 # To keep track of commands if they are broken between reads
-    run_length::Int # The current run length being read, in case a length run is split between reads
-    lookback_distance::UInt16 # The lookback distance being read, in case it is split between reads
-
     remaining_literals::Int # Storage for the literals left to copy: could be because it was smooshed into the last copy command or because the input ran out before all the literals needed were copied
 
     last_literals_copied::UInt8 # determines how to interpret commands 0 through 15
@@ -43,9 +53,6 @@ mutable struct LZO1X1DecompressorCodec <: AbstractLZODecompressorCodec
     LZO1X1DecompressorCodec() = new(
         PassThroughFIFO(LZO1X1_MAX_DISTANCE),
         BEFORE_FIRST_LITERAL,
-        0 % UInt8,
-        0,
-        0 % UInt16,
         0,
         0 % UInt8,
     )
@@ -73,9 +80,88 @@ function TranscodingStreams.startproc(codec::LZO1X1DecompressorCodec, mode::Symb
     return :ok
 end
 
+function decode_run_length(input::Memory, start_index::Int, bits::Int)
+    mask = ((1 << bits) - 1)
+    byte = input[start_index] & mask
+    bytes = 1
+    len = byte % Int
+    input_length = length(input)
+    while byte == 0 && start_index + bytes <= input_length
+        if start_index + bytes > input_length
+            return 0, 0
+        end
+        byte = input[start_index + bytes]
+        len += 255
+        bytes += 1
+    end
+    return bytes + 1, len + byte
+end
+
+function decypher_copy(input::Memory, start_index::Int, last_literals_copied::Int)
+    remaining_bytes = length(input) - start_index + 1
+    command = input[start_index]
+
+    # 2-byte commands first
+    if remaining_bytes < 2
+        return NULL_HISTORY_COMMAND
+    elseif command < 0b00010000
+        after = command & 0b00000011
+        if last_literals_copied > 0 && last_literals_copied < 4
+            len = 2
+            dist = ((input[start_index + 1] % Int) << 2) + ((command & 0b00001100) >> 2) + 1
+        else
+            len = 3
+            dist = ((input[start_index + 1] % Int) << 2) + ((command & 0b00001100) >> 2) + 2049
+        end
+        return HistoryCopyCommand(2, dist, len, after)
+    elseif (command & 0b11000000) != 0
+        after = command & 0b00000011
+        if command < 0b10000000
+            len = 3 + ((command & 0b00100000) >> 5)
+            dist = ((input[start_index + 1] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
+        else
+            len = 5 + ((command & 0b01100000) >> 5)
+            dist = ((input[start_index + 1] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
+        end
+        return HistoryCopyCommand(2, dist, len, after)
+    elseif command < 0b00100000
+        # variable-width length encoding
+        msb = ((command & 0b00001000) % Int) << 11
+        bytes, len = decode_run_length(input, start_index, 3)
+        if bytes == 0 || remaining_bytes < bytes + 2
+            return NULL_HISTORY_COMMAND
+        end
+        dist = 16384 + msb + ((input[start_index + bytes + 1] % Int) << 6) + ((input[start_index + bytes + 2] % Int) >> 2)
+        after = input[start_index + bytes + 2] & 0b00000011
+        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
+    else
+        # variable-width length encoding
+        bytes, len = decode_run_length(input, start_index, 5)
+        if bytes == 0 || remaining_bytes < bytes + 2
+            return NULL_HISTORY_COMMAND
+        end
+        dist = 1 + ((input[start_index + bytes + 1] % Int) << 6) + ((input[start_index + bytes + 2] % Int) >> 2)
+        after = input[start_index + bytes + 2] & 0b00000011
+        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
+    end
+end
+
+function decypher_literal(input::Memory, start_index::Int)
+    command = input[start_index]
+    if command < 0b00010000
+        bytes, len = decode_run_length(input, start_index, 4)
+        if bytes == 0
+            return NULL_LITERAL_COMMAND
+        end
+        return LiteralCopyCommand(bytes, len + 3)
+    else
+        return LiteralCopyCommand(1, command - 17)
+    end
+end
+
 function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memory, output::Memory, error::Error)
 
-    input_length = length(input) % Int # length(::Memory) returns a UInt for whatever reason
+    input_length = length(input) # length(::Memory) returns a UInt for whatever reason
     
     # An input length of zero signals EOF
     if input_length == 0
@@ -100,47 +186,39 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
     while n_read < input_length
 
         if codec.state == BEFORE_FIRST_LITERAL
+            if n_read != 0
+                error[] = FormatException()
+                return 0, 0, :error
+            end
             # First command is special
-            r, status = consume_first_literal!(codec, input, n_read + 1, error)
-            n_read += r
-            if status != :ok
-                return n_read, n_written, :error
+            if input[n_read + 1] == 16 # history copy command
+                error[] = FormatException()
+                return 0, 0, :error
             end
-        end
-        
-        if codec.state == IDLE
-            # Read the command
-            r, status = consume_command!(codec, input, n_read + 1, error)
-            n_read += r
-            if status != :ok
-                return n_read, n_written, :error
-            end
-        end
 
-        if codec.state == READING_RUN
-            # Store the run length
-            r, status = consume_run!(codec, input, n_read + 1, error)
-            n_read += r
-            if status != :ok
-                return n_read, n_written, :error
+            literal_command = decypher_literal(input, 1)
+            if literal_command == NULL_LITERAL_COMMAND
+                # need more input to know what to do!
+                return 0, 0, :ok
             end
-        end
 
-        if codec.state == READING_DISTANCE
-            # Store the distance
-            r, status = consume_distance!(codec, input, n_read + 1, error)
-            n_read += r
-            if status != :ok
-                return n_read, n_written, :error
+            n_read += literal_command.command_length
+            
+            # TODO: execute copy
+            # TODO: update n_read, n_written
+            # r, w = ...
+            r = 0
+            w = 0
+
+            codec.last_literals_copied = min(literal_command.copy_length, 4)
+
+            if r < literal_command.copy_length
+                codec.remaining_literals = literal_command.copy_length - r
+                codec.state = READING_LITERAL
+                break
             end
-        end
 
-        # This is either a copy or a literal at this point. Assume copy first and deal with literals later.
-        r, w, status = execute_copy!(codec, input, n_read + 1, output, n_written + 1, error)
-        n_read += r
-        n_written += w
-        if status != :ok
-            return n_read, n_written, :error
+            codec.state = AWAITING_COMMAND
         end
 
         if codec.state == READING_LITERAL
@@ -150,88 +228,40 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
             n_written += w
             codec.remaining_literals -= r
             if codec.remaining_literals == 0
-                codec.state = IDLE
+                codec.state = AWAITING_COMMAND
+            else
+                break
             end
         end
-        
+
+        if codec.state == AWAITING_COMMAND && n_read < input_length
+            
+            # peek at the command
+            command = input[n_read + 1]
+
+            if command < 0b00010000 && codec.last_literals_copied == 0
+                literal_command = decypher_literal(input, n_read + 1)
+                # TODO: return if the command read failed
+                # TODO: update n_read
+                # TODO: update last_literals_copied state
+                # TODO: copy the literal
+                # TODO: update n_read, n_written
+                # TODO: break if not everything was read yet
+            else
+                copy_command = decypher_copy(input, n_read + 1, codec.last_literals_copied)
+                # TODO: return if the command read failed
+                # TODO: update n_read
+                # TODO: break if EOS encountered
+                # TODO: execute copy
+                # TODO: update n_read, n_written
+            end
+        end 
     end
 
-    # We are done
     return n_read, n_written, :ok
-
 end
 
 function TranscodingStreams.finalize(codec::LZO1X1DecompressorCodec)
     empty!(codec.output_buffer)
     return
-end
-
-function decompress_input!(codec::LZO1X1DecompressorCodec, input::Memory, input_start::Int, error::Error)
-
-    n_read = 0
-    len = length(input) - input_start + 1
-
-    # The first literal is specially coded.
-    if codec.first_literal
-        first_byte = input[input_start]
-        if first_byte >= 18
-            # I don't think a copy of less than 4 literals as the first command is possible in LZO 1X1, but the option is included for completeness
-            n = first_byte - 18
-            if len < n + 1
-                # can't read enough: request more bytes?
-                return 0, :ok
-            end
-            n_read += 1
-            if n >= 4
-                copyto!(codec.output_buffer, codec.write_head, input, input_start + n_read, n)
-                codec.write_head += n
-                n_read += n
-                codec.next_literal_length = 0x04
-            else
-                # deal with the literal copy in the loop
-                codec.next_literal_length = n
-            end
-        elseif first_byte >= 16
-            # A dictionary copy (16) is not valid at this location
-            # The Linux kernel uses 17 as a flag to describe the version of the bitstream, but it is not otherwise valid
-            error[] = FormatException()
-            return 0, :error
-        end
-        codec.first_literal = false
-    end
-
-    while n_read < len
-        if 0 < codec.next_literal_length < 4
-            # copy literals
-            n_to_copy = min(codec.next_literal_length, len - n_read)
-            copyto!(codec.output_buffer, codec.write_head, input, input_start + n_read, n_to_copy)
-            codec.write_head += n_to_copy
-            n_read += n_to_copy
-            codec.next_literal_length = 4
-            continue
-        end
-
-        command = input[input_start + n_read]
-
-        if (command & 0b10000000) != 0
-            if n_read + 1 >= len
-                # need another byte
-                return n_read, :ok
-            end
-            n_to_copy = 5 + ((command >> 5) & 0b00000011)
-            distance = 1 + (input[input_start + n_read + 1] << 3) + (command >> 2) & 0b00000111
-            codec.next_literal_length = command & 0b00000011
-            
-            r, status = copy_history!(codec.output_buffer, distance, n_to_copy)
-            n_read += r
-            
-        elseif (command & 0b01000000) != 0
-        elseif (command & 0b00100000) != 0
-        elseif (command & 0b00010000) != 0
-        else
-        end
-    end
-
-    return n_read, :ok
-
 end
