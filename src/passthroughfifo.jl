@@ -13,7 +13,7 @@ end
 capacity(p::PassThroughFIFO) = length(p.data)
 Base.size(p::PassThroughFIFO) = (min(capacity(p), p.write_head-1),)
 Base.checkbounds(::Type{Bool}, p::PassThroughFIFO, i::Integer) = 1 <= i < p.write_head
-function Base.getindex(p::PassThroughFIFO, i::Integer)
+function Base.getindex(p::PassThroughFIFO, i)
     @boundscheck checkbounds(p, i)
     getindex(p.data, i)
 end
@@ -58,4 +58,18 @@ function prepend!(p::PassThroughFIFO, source::Union{Memory, AbstractVector{UInt8
     p.write_head += to_copy
 
     return to_copy, to_expel
+end
+
+function pushout!(p::PassThroughFIFO, value::UInt8, sink::Union{Memory, AbstractVector{UInt8}}, sink_start::Int)
+    # if it fits, just put it in
+    available = length(p.data) - p.write_head + 1
+    if available > 0
+        p.data[p.write_head] = value
+        p.write_head += 1
+        return 0
+    end
+
+    sink[sink_start], p.data[p.write_head] = p.data[p.write_head], value
+    p.write_head += 1
+    return 1
 end

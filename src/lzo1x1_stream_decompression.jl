@@ -203,19 +203,16 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
             end
 
             n_read += literal_command.command_length
-            
-            # TODO: execute copy
-            # TODO: update n_read, n_written
-            # r, w = ...
-            r = 0
-            w = 0
-
             codec.last_literals_copied = min(literal_command.copy_length, 4)
+            
+            r, w = prepend!(codec.output_buffer, input, n_read + 1, output, n_written + 1, literal_command.copy_length)
+            n_read += r
+            n_written += w
 
             if r < literal_command.copy_length
                 codec.remaining_literals = literal_command.copy_length - r
                 codec.state = READING_LITERAL
-                break
+                break # don't keep looping: return and ask for more input
             end
 
             codec.state = AWAITING_COMMAND
@@ -230,7 +227,7 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
             if codec.remaining_literals == 0
                 codec.state = AWAITING_COMMAND
             else
-                break
+                break # don't keep looping: return and ask for more input
             end
         end
 
@@ -241,19 +238,51 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
 
             if command < 0b00010000 && codec.last_literals_copied == 0
                 literal_command = decypher_literal(input, n_read + 1)
-                # TODO: return if the command read failed
-                # TODO: update n_read
-                # TODO: update last_literals_copied state
-                # TODO: copy the literal
-                # TODO: update n_read, n_written
-                # TODO: break if not everything was read yet
+                if literal_command == NULL_LITERAL_COMMAND
+                    break # don't keep looping: return and ask for more input
+                end
+
+                n_read += literal_command.command_length
+                codec.last_literals_copied = min(literal_command.copy_length, 4)
+
+                r, w = prepend!(codec.output_buffer, input, n_read + 1, output, n_written + 1, literal_command.copy_length)
+                n_read += r
+                n_written += w
+
+                if r < literal_command.copy_length
+                    codec.remaining_literals = literal_command.copy_length - r
+                    codec.state = READING_LITERAL
+                    break # don't keep looping: return and ask for more input
+                end
+                
+                codec.state = AWAITING_COMMAND
             else
                 copy_command = decypher_copy(input, n_read + 1, codec.last_literals_copied)
-                # TODO: return if the command read failed
-                # TODO: update n_read
-                # TODO: break if EOS encountered
-                # TODO: execute copy
-                # TODO: update n_read, n_written
+                if copy_command == NULL_HISTORY_COMMAND
+                    break # don't keep looping: return and ask for more input
+                end
+                
+                n_read += copy_command.command_length
+                
+                if copy_command == END_OF_STREAM_COMMAND
+                    codec.state = END_OF_STREAM
+                    break # flush happens when empty input is passed by TranscodingStreams
+                end
+                
+                # execute copy manually, byte by byte, to account for potential looping of the output buffer
+                # which happens when the number of bytes to copy is greater than the lookback distance
+                for i in 0:copy_command.copy_length
+                    w = pushout!(codec.output_buffer, codec.output_buffer[end-copy_command.lookback+i], output, n_written)
+                    n_written += w
+                end
+
+                codec.remaining_literals = copy_command.post_copy_literals
+                codec.last_literals_copied = codec.remaining_literals
+                if codec.remaining_literals != 0
+                    codec.state = READING_LITERAL
+                else
+                    codec.state = AWAITING_COMMAND
+                end
             end
         end 
     end
