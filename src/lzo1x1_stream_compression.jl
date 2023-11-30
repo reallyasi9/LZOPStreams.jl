@@ -20,12 +20,10 @@ const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
     LITERAL # Waiting on end of long literal
 end 
 
-abstract type AbstractLZOCompressorCodec <: TranscodingStreams.Codec end
-
 """
-    LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
+    LZO1X1CompressorCodec <: TranscodingStreams.Codec
 
-A `TranscodingStreams.Codec` struct that compresses data according to the 1X1 version of the LZO algorithm.
+A struct that compresses data according to the 1X1 version of the LZO algorithm.
 
 The LZO 1X1 algorithm is a Lempel-Ziv lossless compression algorithm defined by:
 - A lookback dictionary implemented as a hash map with a maximum of size of `1<<12 = 4096` elements;
@@ -34,7 +32,7 @@ The LZO 1X1 algorithm is a Lempel-Ziv lossless compression algorithm defined by:
 
 The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version claims to use only a 4096-byte hash map as additional working memory, but it also requires that a continuous space in memory be available to hold the entire output of the compressed data, the length of which is not knowable _a priori_ but can be larger than the uncompressed data by a factor of roughly 256/255. This implementation needs to keep 49151 bytes of input history in memory in addition to the 4096-byte hash map, but only expands the output as necessary during compression.
 """
-mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
+mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
 
     input_buffer::CircularVector{UInt8} # 49151-byte history of uncompressed input data
@@ -67,18 +65,12 @@ mutable struct LZO1X1CompressorCodec <: AbstractLZOCompressorCodec
 end
 
 const LZOCompressorCodec = LZO1X1CompressorCodec
-const LZOCompressorStream{S} = TranscodingStream{LZO1X1CompressorCodec,S}
+const LZOCompressorStream{S} = TranscodingStream{LZO1X1CompressorCodec,S} where S<:IO
+LZOCompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOCompressorCodec(), stream; kwargs...)
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
-    codec.input_buffer .= 0
-    codec.read_head = 1
-    codec.write_head = 1
-    codec.state = FIRST_LITERAL
-    codec.match_start_index = 0
     empty!(codec.output_buffer)
-    codec.previous_copy_command_was_short = false
-    codec.previous_literal_length = 0
     return
 end
 
@@ -99,7 +91,13 @@ function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Me
     return max((length(codec.output_buffer) + length(input)) ÷ 2, 24)
 end
 
-function TranscodingStreams.startproc(codec::LZO1X1CompressorCodec, mode::Symbol, error::Error)
+function TranscodingStreams.startproc(codec::LZO1X1CompressorCodec, ::Symbol, ::Error)
+    codec.read_head = 1
+    codec.write_head = 1
+    codec.state = FIRST_LITERAL
+    codec.match_start_index = 0
+    codec.previous_copy_command_was_short = false
+    codec.previous_literal_length = 0
     return :ok
 end
 

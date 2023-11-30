@@ -73,3 +73,15 @@ function pushout!(p::PassThroughFIFO, value::UInt8, sink::Union{Memory, Abstract
     p.write_head += 1
     return 1
 end
+
+function self_copy_and_output!(p::PassThroughFIFO, lookback::Int, sink::Union{Memory, AbstractVector{UInt8}}, sink_start::Int, N::Int)
+    n_written = 0
+    while N >= lookback
+        _, expelled = prepend!(p, p.data, p.write_head - lookback, sink, sink_start + n_written, lookback)
+        N -= lookback
+        n_written += expelled
+    end
+    _, expelled = prepend!(p, p.data, p.write_head - lookback, sink, sink_start + n_written, N)
+    n_written += expelled
+    return n_written
+end
