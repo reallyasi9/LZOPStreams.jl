@@ -100,10 +100,6 @@ function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Me
 end
 
 function TranscodingStreams.startproc(codec::LZO1X1CompressorCodec, mode::Symbol, error::Error)
-    if mode != :write
-        error[] = ErrorException("$(type(codec)) is write-only")
-        return :error
-    end
     return :ok
 end
 

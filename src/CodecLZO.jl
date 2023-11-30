@@ -3,7 +3,10 @@ module CodecLZO
 export
     LZO1X1CompressorCodec,
     LZOCompressorCodec,
-    LZOCompressorStream
+    LZOCompressorStream,
+    LZO1X1DecompressorCodec,
+    LZODecompressorCodec,
+    LZODecompressorStream
 
 import TranscodingStreams:
     TranscodingStreams,
