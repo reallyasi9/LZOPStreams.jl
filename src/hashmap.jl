@@ -55,3 +55,34 @@ function replace!(h::HashMap{K,V}, key::K, value::V) where {K<:Integer, V}
     h.data[idx] = value
     return old_value
 end
+
+"""
+    replace_all_matching!(h::HashMap, input, input_start, output, output_start)
+
+Count the number of elements at the start of `input` that match the elements at the start of `output`, putting the matching indices of `input` as values into `h` keyed by the `K` integer read from `input` at that index.
+
+Returns the number of matching bytes found (not necessarily equal to the number of `K`s put into `h`).
+"""
+function replace_all_matching!(h::HashMap{K,V}, input::Union{AbstractVector{UInt8}, Memory}, input_start::Int, output::Union{AbstractVector{UInt8}, Memory}, output_start::Int) where {K<:Integer,V}
+    n = min(length(input) - input_start, length(output) - output_start)
+    # the first sizeof(K) elements need to be checked byte-by-byte
+    for i in 0:sizeof(K)-1
+        if input[input_start + i] != output[output_start + i]
+            return i
+        end
+    end
+    # now all keys can be put into the HashMap
+    input_value = reinterpret_get(K, input, input_start)
+    setindex!(h, input_start, input_value)
+    
+    @inbounds for i in sizeof(K):n-sizeof(K)+1
+        if input[input_start + i] != output[output_start + i]
+            return i-1
+        end
+        input_value = reinterpret_next(input_value, input, input_start + i)
+        setindex!(h, input_start + i, input_value)
+    end
+
+    # we cannot match on the last sizeof(K)-1 values
+    return n-sizeof(K)+1
+end

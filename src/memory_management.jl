@@ -12,6 +12,22 @@ function reinterpret_get(::Type{T}, input::AbstractVector{UInt8}, index::Int = 1
     end
     return out
 end
+reinterpret_get(::Type{UInt8}, input::AbstractVector{UInt8}, index::Int = 1) = input[index]
+reinterpret_get(::Type{Int8}, input::AbstractVector{UInt8}, index::Int = 1) = input[index] % Int8
+
+"""
+    reinterpret_next(previous::T, input::AbstractVector{UInt8}, [index::Int = 1])::T
+
+Get the byte from `input` at `index` and push it to the LSB of `previous`, rotating off the MSB. This tries to be faster than doing `reinterpret(T, input[index:index+sizeof(T)-1])` twice by reusing the already read LSBs.
+"""
+function reinterpret_next(previous::T, input::AbstractVector{UInt8}, index::Int = 1) where {T<:Integer}
+    @boundscheck checkbounds(input, index + sizeof(T) - 1)
+    previous <<= 8
+    previous |= input[index]
+    return previous
+end
+reinterpret_next(::UInt8, input::AbstractVector{UInt8}, index::Int = 1) = input[index]
+reinterpret_next(::Int8, input::AbstractVector{UInt8}, index::Int = 1) = input[index] % Int8
 
 function Base.pointer(m::Memory, i::Int = 1)
     return m.ptr + i - 1

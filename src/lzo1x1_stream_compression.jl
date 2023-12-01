@@ -183,7 +183,7 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output::Union{Abst
     len = length(codec.output_buffer)
 
     if codec.state == FIRST_LITERAL
-        # This is completely valid for the first literal, but it doesn't matter because liblzo2 doesn't use this special encoding
+        # This is completely valid for the first literal, but liblzo2 doesn't use this special encoding
         if len < (0xff - 17)
             output[start_index] = (len+17) % UInt8
             codec.previous_literal_length = len
@@ -341,6 +341,7 @@ function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVecto
     return to_copy
 end
 
+
 function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{UInt8}, Memory}, output_start::Int)
     input_length = codec.write_head - codec.read_head
 
@@ -375,11 +376,19 @@ function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Union{Abstract
 
         # If we have a history lookup, find the length of the match
         n_matching = count_matching(
-            @view(codec.input_buffer[input_idx:codec.write_head-1]),
-            @view(codec.input_buffer[codec.match_start_index:codec.write_head-1]))
+            @view(codec.input_buffer[input_idx:codec.write_head-LZO1X1_MIN_MATCH]),
+            @view(codec.input_buffer[codec.match_start_index:codec.write_head-LZO1X1_MIN_MATCH]))
+        
+        # put all of the matching data into the dictionary
+        matched_long = reinterpret_get(UInt32, codec.input_buffer, codec.match_start_index)
+        for idx in (codec.match_start_index + 1):input_idx
+            matched_long = reinterpret_next(matched_long, codec.input_buffer, idx)
+            setindex!(codec.dictionary, idx, matched_long)
+        end
+
         distance = input_idx - codec.match_start_index
         input_idx += n_matching
-        if input_idx == codec.write_head
+        if input_idx >= codec.write_head-LZO1X1_MIN_MATCH
             # If out of input, wait for more
             return n_written
         end
