@@ -143,17 +143,17 @@ Literal and copy lengths are always encoded as either a single byte or a sequenc
 Note: the argument `len` is expected to be the _adjusted length_ for the command. Literals use an adjusted length of `len = length(literal) - 3` and copy commands use an adjusted literal length of `len = length(copy) - 2`.
 """
 function encode_run!(output::Union{AbstractVector{UInt8},Memory}, start_index::Int, len::Int, bits::Int)
-    if len < 1 << bits
+    output[start_index] = zero(UInt8) # clear the bits just in case
+    mask = UInt8(1 << bits - 1)
+    if len <= mask
         output[start_index] |= len % UInt8
         return 1
     end
-    mask = UInt8(1 << bits - 1)
     len -= mask
-    output[start_index] &= ~mask # clear the bits just in case
     n_written = 1
     while len > 255
         len -= 255
-        output[start_index + n_written] = 0 % UInt8
+        output[start_index + n_written] = zero(UInt8)
         n_written += 1
     end
     output[start_index + n_written] = len % UInt8
@@ -182,36 +182,44 @@ function encode_literal_length!(codec::LZO1X1CompressorCodec, output::Union{Abst
     # specially coded.
     len = length(codec.output_buffer)
 
-    if codec.state == FIRST_LITERAL 
+    if codec.state == FIRST_LITERAL
+        # This is completely valid for the first literal, but it doesn't matter because liblzo2 doesn't use this special encoding
         if len < (0xff - 17)
             output[start_index] = (len+17) % UInt8
             codec.previous_literal_length = len
             return 1
         else
-            output[start_index] = 0 % UInt8
+            output[start_index] = zero(UInt8)
+            codec.previous_literal_length = len
             return encode_run!(output, start_index, len-3, 4)
         end
     end
 
     # Except for the first literal, literal copies always follow history copies, so a command should always be in the buffer.
 
-    # 2-bit literal lengths are encoded in the low two bits of the previous command.
-    # Commands are encoded as 16-bit LEs, and either the LSB of the 1st byte or 2nd byte are overwritten
-    # depending on the length of the previous history copy.
     output[start_index] = popfirst!(codec.output_buffer)
-    output[start_index+1] = popfirst!(codec.output_buffer)
-    n_written = 2
-    len -= 2
+    n_written = 1
+    len -= 1 # we just popped off of the buffer, so account for it here
+
+    if !codec.previous_copy_command_was_short
+        output[start_index+1] = popfirst!(codec.output_buffer)
+        n_written += 1
+        len -= 1 # again, we just popped something off the buffer, so the literal is a little shorter
+    end
+
     codec.previous_literal_length = len
+
+    # 2-bit literal lengths are encoded in the low two bits of the previous command.
+    # Interestingly, because the distance is encoded in LE, the 2-bit literal incoding is always on the first byte of the output buffer.
     if len < 4
-        idx_offset = codec.previous_copy_command_was_short ? 0 : 1
-        output[start_index+idx_offset] |= len % UInt8
+        output[start_index] &= 0b11111100
+        output[start_index] |= len % UInt8
         return n_written
     end
 
     # everything else is encoded raw or as a run of unary zeros plus a remainder
     len -= 3
-    n_written += encode_run!(output, start_index, len, LZO1X1_RUN_BITS)
+    n_written += encode_run!(output, start_index + n_written, len, LZO1X1_RUN_BITS)
     
     return n_written
 end
@@ -281,28 +289,32 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{U
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
         L = UInt8(N - 3)
-        push!(codec.output_buffer, 0b01000000 | (L << 5) | (D << 2))
+        output[start_index] = 0b01000000 | (L << 5) | (D << 2)
         push!(codec.output_buffer, H)
         codec.previous_copy_command_was_short = true
-        return 0
+        return 1
     elseif 5 <= N <= 8 && distance <= 2049
         # 0b1LLDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
         distance -= 1
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
         L = UInt8(N - 5)
-        push!(codec.output_buffer, 0b10000000 | (L << 5) | (D << 2))
+        output[start_index] = 0b10000000 | (L << 5) | (D << 2)
         push!(codec.output_buffer, H)
         codec.previous_copy_command_was_short = true
-        return 0
+        return 1
     else
         if distance < 16384
-            # 0b001LLLLL_*_DDDDDDDD_DDDDDDSS, distance = D + 1, length = 2 + (L ?: *)
+            # 0b001LLLLL_*_DDDDDDSS_DDDDDDDD, distance = D + 1, length = 2 + (L ?: *)
+            # Note that D is encoded LE in the last 16 bits!
+            output[start_index] = zero(UInt8)
             run = encode_run!(output, start_index, N-2, 5)
             output[start_index] |= 0b00100000
             distance -= 1
         else
-            # 0b0001HLLL_*_DDDDDDDD_DDDDDDSS, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
+            # 0b0001HLLL_*_DDDDDDSS_DDDDDDDD, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
+            # Note that D is encoded LE in the last 16 bits!
+            output[start_index] = zero(UInt8)
             run = encode_run!(output, start_index, N-2, 3)
             output[start_index] |= 0b00010000
             distance -= 16384
@@ -311,8 +323,8 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{U
         end
         DH = UInt8((distance >> 6) & 0b11111111)
         DL = UInt8(distance & 0b00111111)
+        push!(codec.output_buffer, DL << 2) # This is popped off the top with popfirst! when encoding the next literal length
         push!(codec.output_buffer, DH)
-        push!(codec.output_buffer, DL << 2)
         codec.previous_copy_command_was_short = false
         return run
     end
