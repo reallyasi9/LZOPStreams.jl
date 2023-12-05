@@ -21,10 +21,13 @@ function Base.empty!(p::PassThroughFIFO)
     p.write_head = 1
     return p
 end
+function is_full(p::PassThroughFIFO)
+    return p.write_head > length(p.data)
+end
 
 function flush!(p::PassThroughFIFO, sink::Union{Memory, AbstractVector{UInt8}}, sink_start::Integer)
     to_flush = length(p)
-    start_idx = p.write_head <= to_flush ? 1 : p.write_head
+    start_idx = is_full(p) ? p.write_head : 1
 
     copyto!(sink, sink_start, p.data, start_idx, to_flush)
     empty!(p)

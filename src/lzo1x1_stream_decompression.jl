@@ -68,7 +68,11 @@ end
 function TranscodingStreams.minoutsize(codec::LZO1X1DecompressorCodec, input::Memory)
     # The worst-case scenario is a recursive history lookup, in which case some number of bytes are repeated as many times as the run length requests.
     # Assuming that some output already esists so that the history lookup succeeds...
-    return length(codec.output_buffer) + (length(input) - 3) * 255
+    l = length(codec.output_buffer)
+    if length(input) >= 3
+        l += (length(input) - 3) * 255
+    end
+    return l
 end
 
 function TranscodingStreams.expectedsize(codec::LZO1X1DecompressorCodec, input::Memory)
@@ -146,8 +150,8 @@ function decypher_copy(input::Memory, start_index::Int, last_literals_copied::UI
         if bytes == 0 || remaining_bytes < bytes + 2
             return NULL_HISTORY_COMMAND
         end
-        dist = 16384 + msb + ((input[start_index + bytes] % Int) << 6) + ((input[start_index + bytes + 1] % Int) >> 2)
-        after = input[start_index + bytes + 1] & 0b00000011
+        dist = 16384 + msb + ((input[start_index + bytes + 1] % Int) << 6) + ((input[start_index + bytes] % Int) >> 2)
+        after = input[start_index + bytes] & 0b00000011
         return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
     else
         # variable-width length encoding
@@ -155,8 +159,8 @@ function decypher_copy(input::Memory, start_index::Int, last_literals_copied::UI
         if bytes == 0 || remaining_bytes < bytes + 2
             return NULL_HISTORY_COMMAND
         end
-        dist = 1 + ((input[start_index + bytes] % Int) << 6) + ((input[start_index + bytes + 1] % Int) >> 2)
-        after = input[start_index + bytes + 1] & 0b00000011
+        dist = 1 + ((input[start_index + bytes + 1] % Int) << 6) + ((input[start_index + bytes] % Int) >> 2)
+        after = input[start_index + bytes] & 0b00000011
         return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
     end
 end
