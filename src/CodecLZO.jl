@@ -6,7 +6,13 @@ export
     LZOCompressorStream,
     LZO1X1DecompressorCodec,
     LZODecompressorCodec,
-    LZODecompressorStream
+    LZODecompressorStream,
+    LZO1X1FastCompressorCodec,
+    LZOFastCompressorCodec,
+    LZOFastCompressorStream,
+    LZO1X1FastDecompressorCodec,
+    LZOFastDecompressorCodec,
+    LZOFastDecompressorStream
 
 import TranscodingStreams:
     TranscodingStreams,
@@ -17,10 +23,14 @@ import TranscodingStreams:
 import CircularArrays:
     CircularVector
 
+using LZO_jll
+
 include("memory_management.jl")
 include("hashmap.jl")
 include("passthroughfifo.jl")
 include("lzo1x1_stream_compression.jl")
 include("lzo1x1_stream_decompression.jl")
+include("lzo1x1_fast_compression.jl")
+include("lzo1x1_fast_decompression.jl")
 
 end
