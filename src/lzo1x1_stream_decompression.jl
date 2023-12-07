@@ -40,6 +40,7 @@ For implementation purposes, this decompressor uses a buffer of 49151 bytes to s
 The C implementation of LZO defined by liblzo2 requires that all decompressed information be available in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version claims to use no additional working memory, but it requires that a continuous space in memory be available to hold the entire output of the compressed data, the length of which is not knowable _a priori_ but can be larger than the compressed data by a factor of roughly 255. This implementation needs to keep 49151 bytes of output history in memory while decompressing, equal to the maximum lookback distance of the LZO 1x1 algorithm, and a small number of bytes to keep track of the command being processed in case the command is broken between multiple reads from the input memory.
 """
 mutable struct LZO1X1DecompressorCodec <: TranscodingStreams.Codec
+    input_buffer::Vector{UInt8} # The codec must consume all the input from an input stream before the end-of-stream signal is sent, so input must be buffered
     output_buffer::PassThroughFIFO # 49151-byte history of uncompressed output data
     
     state::DecompressionState # The very first literal is encoded differently from the others
@@ -49,6 +50,7 @@ mutable struct LZO1X1DecompressorCodec <: TranscodingStreams.Codec
     last_literals_copied::UInt8 # determines how to interpret commands 0 through 15
 
     LZO1X1DecompressorCodec() = new(
+        Vector{UInt8}(),
         PassThroughFIFO(LZO1X1_MAX_DISTANCE),
         BEFORE_FIRST_LITERAL,
         0,
@@ -61,6 +63,7 @@ const LZODecompressorStream{S} = TranscodingStream{LZO1X1DecompressorCodec,S} wh
 LZODecompressorStream(stream::IO, kwargs...) = TranscodingStream(LZODecompressorCodec(), stream; kwargs...)
 
 function TranscodingStreams.initialize(codec::LZO1X1DecompressorCodec)
+    empty!(codec.input_buffer)
     empty!(codec.output_buffer)
     return
 end
@@ -69,18 +72,20 @@ function TranscodingStreams.minoutsize(codec::LZO1X1DecompressorCodec, input::Me
     # The worst-case scenario is a recursive history lookup, in which case some number of bytes are repeated as many times as the run length requests.
     # Assuming that some output already esists so that the history lookup succeeds...
     l = length(codec.output_buffer)
-    if length(input) >= 3
-        l += (length(input) - 3) * 255
+    li = length(input) + length(codec.input_buffer)
+    if li >= 3
+        l += (li - 3) * 255
     end
     return l
 end
 
 function TranscodingStreams.expectedsize(codec::LZO1X1DecompressorCodec, input::Memory)
-    # Usually around 2.4:1 compression ratio with a minimum around 20 bytes (see https://morotti.github.io/lzbench-web)
-    return min(length(codec.output_buffer) + length(input) * 3, 20)
+    # Usually around 2.4:1 compression ratio (see https://morotti.github.io/lzbench-web)
+    return length(codec.output_buffer) + (length(input) + length(codec.input_buffer)) * 3
 end
 
 function TranscodingStreams.startproc(codec::LZO1X1DecompressorCodec, ::Symbol, ::Error)
+    empty!(codec.input_buffer)
     empty!(codec.output_buffer) # this costs almost nothing
     codec.state = BEFORE_FIRST_LITERAL
     codec.remaining_literals = 0
@@ -88,7 +93,7 @@ function TranscodingStreams.startproc(codec::LZO1X1DecompressorCodec, ::Symbol, 
     return :ok
 end
 
-function decode_run_length(input::Memory, start_index::Int, bits::Int)
+function decode_run_length(input::Union{Vector{UInt8}, Memory}, start_index::Int, bits::Int)
     mask = ((1 << bits) - 1) % UInt8
     byte = input[start_index] & mask
     len = byte % Int
@@ -116,7 +121,7 @@ function decode_run_length(input::Memory, start_index::Int, bits::Int)
     return bytes + 1, len + byte + mask
 end
 
-function decypher_copy(input::Memory, start_index::Int, last_literals_copied::UInt8)
+function decypher_copy(input::Union{Vector{UInt8}, Memory}, start_index::Int, last_literals_copied::UInt8)
     remaining_bytes = length(input) - start_index + 1
     command = input[start_index]
 
@@ -165,7 +170,7 @@ function decypher_copy(input::Memory, start_index::Int, last_literals_copied::UI
     end
 end
 
-function decypher_literal(input::Memory, start_index::Int)
+function decypher_literal(input::Union{Vector{UInt8}, Memory}, start_index::Int)
     command = input[start_index]
     if command < 0b00010000
         bytes, len = decode_run_length(input, start_index, 4)
@@ -200,32 +205,33 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
     end
 
     # Everything else is decompressed into the buffer then emitted
-    n_read = 0
+    append!(codec.input_buffer, input)
+    read_idx = 0
     n_written = 0
-    while n_read < input_length
+    while read_idx < input_length
 
         if codec.state == BEFORE_FIRST_LITERAL
-            if n_read != 0
+            if read_idx != 0
                 error[] = FormatException()
                 return 0, 0, :error
             end
             # First command is special
-            if input[n_read + 1] == 16 # history copy command
+            if codec.input_buffer[read_idx + 1] == 16 # history copy command
                 error[] = FormatException()
                 return 0, 0, :error
             end
 
-            literal_command = decypher_literal(input, 1)
+            literal_command = decypher_literal(codec.input_buffer, 1)
             if literal_command == NULL_LITERAL_COMMAND
                 # need more input to know what to do!
                 return 0, 0, :ok
             end
 
-            n_read += literal_command.command_length
+            read_idx += literal_command.command_length
             codec.last_literals_copied = min(literal_command.copy_length, 4)
             
-            r, w = prepend!(codec.output_buffer, input, n_read + 1, output, n_written + 1, literal_command.copy_length)
-            n_read += r
+            r, w = prepend!(codec.output_buffer, codec.input_buffer, read_idx + 1, output, n_written + 1, literal_command.copy_length)
+            read_idx += r
             n_written += w
 
             if r < literal_command.copy_length
@@ -239,8 +245,8 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
 
         if codec.state == READING_LITERAL
             # Push back as many literals as allowed
-            r, w = prepend!(codec.output_buffer, input, n_read + 1, output, n_written + 1, codec.remaining_literals)
-            n_read += r
+            r, w = prepend!(codec.output_buffer, codec.input_buffer, read_idx + 1, output, n_written + 1, codec.remaining_literals)
+            read_idx += r
             n_written += w
             codec.remaining_literals -= r
             if codec.remaining_literals == 0
@@ -250,22 +256,22 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
             end
         end
 
-        if codec.state == AWAITING_COMMAND && n_read < input_length
+        if codec.state == AWAITING_COMMAND && read_idx < input_length
             
             # peek at the command
-            command = input[n_read + 1]
+            command = codec.input_buffer[read_idx + 1]
 
             if command < 0b00010000 && codec.last_literals_copied == 0
-                literal_command = decypher_literal(input, n_read + 1)
+                literal_command = decypher_literal(codec.input_buffer, read_idx + 1)
                 if literal_command == NULL_LITERAL_COMMAND
                     break # don't keep looping: return and ask for more input
                 end
 
-                n_read += literal_command.command_length
+                read_idx += literal_command.command_length
                 codec.last_literals_copied = min(literal_command.copy_length, 4)
 
-                r, w = prepend!(codec.output_buffer, input, n_read + 1, output, n_written + 1, literal_command.copy_length)
-                n_read += r
+                r, w = prepend!(codec.output_buffer, codec.input_buffer, read_idx + 1, output, n_written + 1, literal_command.copy_length)
+                read_idx += r
                 n_written += w
 
                 if r < literal_command.copy_length
@@ -276,12 +282,12 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
                 
                 codec.state = AWAITING_COMMAND
             else
-                copy_command = decypher_copy(input, n_read + 1, codec.last_literals_copied)
+                copy_command = decypher_copy(codec.input_buffer, read_idx + 1, codec.last_literals_copied)
                 if copy_command == NULL_HISTORY_COMMAND
                     break # don't keep looping: return and ask for more input
                 end
                 
-                n_read += copy_command.command_length
+                read_idx += copy_command.command_length
                 
                 if copy_command == END_OF_STREAM_COMMAND
                     codec.state = END_OF_STREAM
@@ -289,7 +295,7 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
                 end
                 if copy_command.lookback > codec.output_buffer.write_head-1
                     error[] = FormatException()
-                    return n_read, n_written, :error
+                    return input_length, n_written, :error
                 end
                 
                 # execute copy manually, byte by byte, to account for potential looping of the output buffer
@@ -307,7 +313,9 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
         end 
     end
 
-    return n_read, n_written, :ok
+    # make sure to remove the input buffer we used before the next call starts
+    splice!(codec.input_buffer, 1:read_idx)
+    return input_length, n_written, :ok
 end
 
 function TranscodingStreams.finalize(codec::LZO1X1DecompressorCodec)

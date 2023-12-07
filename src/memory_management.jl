@@ -70,6 +70,10 @@ function Base.copyto!(dest::Memory, di::Integer, src::CircularVector{UInt8}, si:
     return dest
 end
 
+function Base.append!(dest::AbstractVector{UInt8}, src::Memory, si::Integer = 1)
+    return append!(dest, @view(unsafe_wrap(Vector{UInt8}, src.ptr, src.size)[si:end]))
+end
+
 """
     count_matching(a::AbstractVector, b::AbstractVector)
 
