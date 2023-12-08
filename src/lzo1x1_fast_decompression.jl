@@ -21,29 +21,9 @@ const LZOFastDecompressorCodec = LZO1X1FastDecompressorCodec
 const LZOFastDecompressorStream{S} = TranscodingStream{LZO1X1FastDecompressorCodec,S} where S<:IO
 LZOFastDecompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOFastDecompressorCodec(), stream; kwargs...)
 
-function TranscodingStreams.initialize(::LZO1X1FastDecompressorCodec)
-    # The LZO library initialization method takes parameters that check that the following values are consistent between the compiled library and the code calling it:
-    # 1. the version of the library (must be != 0)
-    # 2. sizeof(short)
-    # 3. sizeof(int)
-    # 4. sizeof(long)
-    # 5. sizeof(lzo_uint32_t) (required to be 4 bytes, irrespective of machine architecture)
-    # 6. sizeof(lzo_uint) (required to be 8 bytes, irrespective of machine architecture)
-    # 7. lzo_sizeof_dict_t (size of a pointer)
-    # 8. sizeof(char *)
-    # 9. sizeof(lzo_voidp) (size of void *)
-    # 10. sizeof(lzo_callback_t) (size of a complex callback struct)
-    # If any of these arguments except the first is -1, the check is skipped.
-    e = ccall((:__lzo_init_v2, liblzo2), Cint, (Cuint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint), 1, sizeof(Cshort), sizeof(Cint), sizeof(Clong), sizeof(Culong), sizeof(Culonglong), sizeof(Ptr{Cchar}), sizeof(Ptr{Cchar}), sizeof(Ptr{Cvoid}), -1)
-    if e != LZO_E_OK
-        throw(ErrorException("initialization of liblzo2 failed: $e"))
-    end
-    return
-end
-
 function TranscodingStreams.expectedsize(::LZO1X1FastDecompressorCodec, input::Memory)
-    # Usually around 2.4:1 compression ratio with a minimum around 20 bytes (see https://morotti.github.io/lzbench-web)
-    return min(length(input) * 3, 20)
+    # Usually around 2.4:1 compression ratio (see https://morotti.github.io/lzbench-web)
+    return max(length(input) * 3, length(input) - 4)
 end
 
 function TranscodingStreams.startproc(codec::LZO1X1FastDecompressorCodec, ::Symbol, ::Error)
@@ -51,6 +31,76 @@ function TranscodingStreams.startproc(codec::LZO1X1FastDecompressorCodec, ::Symb
     empty!(codec.output_buffer)
     return :ok
 end
+
+
+"""
+    unsafe_lzo_decompress!(dest::Vector{UInt8}, src)::Int
+
+Decompress `src` to `dest` using the LZO 1X1 algorithm.
+
+The method is "unsafe" in that it does not check to see if the decompressed output can fit into `dest` before proceeding, and may write out of bounds or crash your program if the number of bytes required to decompress `src` is larger than the number of bytes available in `dest`. The method returns the number of bytes written to `dest`, which may be greater than `length(dest)`.
+"""
+function unsafe_lzo_decompress!(dest::Vector{UInt8}, src::AbstractVector{UInt8})
+    return GC.@preserve dest unsafe_lzo_decompress!(pointer(dest), src)
+end
+
+function unsafe_lzo_decompress!(dest::Ptr{UInt8}, src::AbstractVector{UInt8})
+    working_memory = UInt8[] # no working memory needed to decompress
+    size_ptr = Ref{Csize_t}()
+    @ccall liblzo2.lzo1x_decompress(src::Ptr{Cuchar}, sizeof(src)::Csize_t, dest::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint # always returns LZO_E_OK or crashes!
+    return size_ptr[]
+end
+
+unsafe_lzo_decompress!(dest, src::AbstractString) = unsafe_lzo_decompress!(dest, Base.CodeUnits(src))
+
+"""
+    lzo_decompress!(dest::Vector{UInt8}, src)
+
+Decompress `src` to `dest` using the LZO 1X1 algorithm.
+
+The destination vector `dest` will be resized to fit the decompressed data if necessary. Returns the modified `dest`.
+"""
+function lzo_decompress!(dest::Vector{UInt8}, src::AbstractVector{UInt8})
+    old_size = length(dest)
+    if old_size < length(src) # just a guess
+        resize!(dest, length(src))
+    end
+
+    working_memory = UInt8[] # no working memory needed to decompress
+    size_ptr = Ref{Csize_t}(length(dest))
+    while true
+        e = @ccall liblzo2.lzo1x_decompress_safe(src::Ptr{Cuchar}, length(src)::Csize_t, dest::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint
+    
+        if e == LZO_E_OUTPUT_OVERRUN
+            resize!(dest, length(dest)*2)
+            size_ptr[] = length(dest)
+        elseif e != LZO_E_OK
+            throw(ErrorException("liblzo2 decompression error: $e"))
+        else
+            break
+        end
+    end
+
+    resize!(dest, max(size_ptr[], old_size))
+    return dest
+end
+
+lzo_decompress!(dest::Vector{UInt8}, src::AbstractString) = lzo_decompress!(dest, Base.CodeUnits(src))
+
+"""
+    lzo_decompress(src)::Vector{UInt8}
+
+Decompress `src` using the LZO 1X1 algorithm.
+
+Returns a decompressed version of `src`.
+"""
+function lzo_decompress(src::AbstractVector{UInt8})
+    dest = UInt8[]
+    return lzo_decompress!(dest, src)
+end
+
+lzo_decompress(src::AbstractString) = lzo_decompress(Base.CodeUnits(src))
+
 
 function lzo_decompress(a::Vector{UInt8}, b::Vector{UInt8})
     working_memory = UInt8[] # no working memory needed to decompress

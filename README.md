@@ -40,11 +40,11 @@ close(stream)
 
 ## Description
 
-If you need to compress and decompress data in a stream and are starting from scratch, _do not use LZO_. Use the more modern CodecLZ4 or CodecSnappy modules. LZO is not designed or optimized for streaming, and is dominated in both compression ratio and speed by LZ4 and Snappy.
+If you need to compress and decompress data in a stream and are starting from scratch, _do not use LZO_. Use the more modern CodecLZ4 or CodecZstd modules. LZO is not designed or optimized for streaming, and is dominated in speed by LZ4 and in compression ratio by zstd.
 
-LZO (Lempel-Ziv-Oberhumer) is an LZ-style compression algorithm in that it encodes a given set of bytes as a sequence of commands that represent either literal copies of data (e.g., "copy the next N bytes directly to the end of the output") or copies from the output history (e.g., "go back K bytes in the output and copy N bytes from that point to the end of the output"). This simple algorithm is remarkably good at compressing things like natural language and computer programs (both source code and compiled binary code), and can be decoded extremely efficiently.
+LZO (Lempel-Ziv-Oberhumer) is an LZ77-style compression algorithm in that it encodes a given set of bytes as a sequence of commands that represent either literal copies of data (e.g., "copy the next N bytes directly to the end of the output") or copies from the output history (e.g., "go back K bytes in the output and copy N bytes from there to the end of the output"). This simple algorithm is remarkably good at compressing things like natural language and computer programs (both source code and compiled binary code), and can be decompressed extremely quickly and with little memory overhead.
 
-LZO, as implemented in liblzo2, is actually XXX separate algorithms: some are mutually compatable (i.e., data compressed with one algorithm can be decompressed with another), some are not; some are very fast, some are not; some are memory-efficient, some are not. This module attempts to implement a version of the "1X1" algorithm. This is the algorithm that the LZO authors recommend. The major features of the algorithm are:
+LZO as implemented in liblzo2 is actually XXX separate algorithms: some are mutually compatable (i.e., data compressed with one algorithm can be decompressed with another), some are not; some are very fast, some are not; some are memory-efficient, some are not. This module attempts to implement a version of the "1X1" algorithm. This is the algorithm that the LZO authors recommend, and is the default algorithm used by the `lzop` program. The major features of this algorithm are:
   - A maximum lookback of XXX bytes;
   - A 4-byte minimum for history matches;
   - A history search with a linearly increasing skip distance as more misses are found;

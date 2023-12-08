@@ -21,43 +21,25 @@ mutable struct LZO1X1FastCompressorCodec <: TranscodingStreams.Codec
     input_buffer::Vector{UInt8}
     working_memory::Vector{UInt8}
 
-    LZO1X1FastCompressorCodec() = new(UInt8[], zeros(UInt8, 1 << 16))
+    LZO1X1FastCompressorCodec() = new(UInt8[], zeros(UInt8, 1 << 12))
 end
 
 const LZOFastCompressorCodec = LZO1X1FastCompressorCodec
 const LZOFastCompressorStream{S} = TranscodingStream{LZO1X1FastCompressorCodec,S} where {S<:IO}
 LZOFastCompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOFastCompressorCodec(), stream; kwargs...)
 
-function TranscodingStreams.initialize(::LZO1X1FastCompressorCodec)
-    # The LZO library initialization method takes parameters that check that the following values are consistent between the compiled library and the code calling it:
-    # 1. the version of the library (must be != 0)
-    # 2. sizeof(short)
-    # 3. sizeof(int)
-    # 4. sizeof(long)
-    # 5. sizeof(lzo_uint32_t) (required to be 4 bytes, irrespective of machine architecture)
-    # 6. sizeof(lzo_uint) (required to be 8 bytes, irrespective of machine architecture)
-    # 7. lzo_sizeof_dict_t (size of a pointer)
-    # 8. sizeof(char *)
-    # 9. sizeof(lzo_voidp) (size of void *)
-    # 10. sizeof(lzo_callback_t) (size of a complex callback struct)
-    # If any of these arguments except the first is -1, the check is skipped.
-    e = ccall((:__lzo_init_v2, liblzo2), Cint, (Cuint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint), 1, sizeof(Cshort), sizeof(Cint), sizeof(Clong), sizeof(Culong), sizeof(Culonglong), sizeof(Ptr{Cchar}), sizeof(Ptr{Cchar}), sizeof(Ptr{Cvoid}), -1)
-    if e != LZO_E_OK
-        throw(ErrorException("initialization of liblzo2 failed: $e"))
-    end
-    return
+function compress_minoutsize(input_len::Integer)
+    # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety 
+    # plus the appropriate commands to start a long literal and end the stream.
+    # CMD(1) + LITERAL_RUN + LITERAL_REMAINDER(1) + LITERAL + EOS(3)
+    return input_len ÷ 255 + input_len + 5
 end
 
-function TranscodingStreams.minoutsize(::LZO1X1FastCompressorCodec, input::Memory)
-    # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety 
-    # plus the appropriate commands to start a long literal or match and end the stream.
-    # CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS + buffer
-    return 1 + length(input) ÷ 255 + 1 + length(input) + 3
-end
+TranscodingStreams.minoutsize(::LZO1X1FastCompressorCodec, input::Memory) = compress_minoutsize(length(input))
 
 function TranscodingStreams.expectedsize(::LZO1X1FastCompressorCodec, input::Memory)
-    # Usually around 2.4:1 compression ratio with a minimum of 24 bytes (see https://morotti.github.io/lzbench-web)
-    return max(length(input) ÷ 2, 24)
+    # Usually around 2.4:1 compression ratio (see https://morotti.github.io/lzbench-web)
+    return max(length(input) ÷ 2, length(input) + 4)
 end
 
 function TranscodingStreams.startproc(codec::LZO1X1FastCompressorCodec, ::Symbol, ::Error)
@@ -66,17 +48,75 @@ function TranscodingStreams.startproc(codec::LZO1X1FastCompressorCodec, ::Symbol
     return :ok
 end
 
-function lzo_compress(a::Vector{UInt8}, working_memory::Vector{UInt8}, output::Memory)
+"""
+    unsafe_lzo_compress!(dest::Vector{UInt8}, src, [working_memory=zeros(UInt8, 1<<12)])::Int
+
+Compress `src` to `dest` using the LZO 1X1 algorithm.
+
+The method is "unsafe" in that it does not check to see if the compressed output can fit into `dest` before proceeding, and may write out of bounds or crash your program if the number of bytes required to compress `src` is larger than the number of bytes available in `dest`. The method returns the number of bytes written to `dest`, which may be greater than `length(dest)`.
+
+Pass `working_memory`, a `Vector{UInt8}` with `length(working_memory) >= 1<<12`, to reuse pre-allocated memory required by the algorithm.
+"""
+function unsafe_lzo_compress!(dest::Vector{UInt8}, src::AbstractVector{UInt8}, working_memory::Vector{UInt8} = zeros(UInt8, 1 << 12))
+    return GC.@preserve dest unsafe_lzo_compress!(pointer(dest), src, working_memory)
+end
+
+function unsafe_lzo_compress!(dest::Ptr{UInt8}, src::AbstractVector{UInt8}, working_memory::Vector{UInt8} = zeros(UInt8, 1 << 12))
+    @boundscheck checkbounds(working_memory, 1<<12)
+
     size_ptr = Ref{Csize_t}()
-    @ccall liblzo2.lzo1x_1_compress(a::Ptr{Cuchar}, sizeof(a)::Csize_t, output.ptr::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint
+    @ccall liblzo2.lzo1x_1_compress(src::Ptr{Cuchar}, sizeof(src)::Csize_t, dest::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint # always returns LZO_E_OK
     return size_ptr[]
 end
+
+unsafe_lzo_compress!(dest, src::AbstractString, working_memory::Vector{UInt8} = zeros(UInt8, 1 << 12)) = unsafe_lzo_compress!(dest, Base.CodeUnits(src), working_memory)
+
+"""
+    lzo_compress!(dest::Vector{UInt8}, src, [working_memory=zeros(UInt8, 1<<12)])
+
+Compress `src` to `dest` using the LZO 1X1 algorithm.
+
+The destination vector `dest` will be resized to fit the compressed data if necessary. Returns the modified `dest`.
+
+Pass `working_memory`, a `Vector{UInt8}` with `length(working_memory) >= 1<<12`, to reuse pre-allocated memory required by the algorithm.
+"""
+function lzo_compress!(dest::Vector{UInt8}, src::AbstractVector{UInt8}, working_memory::Vector{UInt8} = zeros(UInt8, 1 << 12))
+    @boundscheck checkbounds(working_memory, 1<<12)
+
+    old_size = length(dest)
+    min_size = compress_minoutsize(length(src))
+    if old_size < min_size
+        resize!(dest, min_size)
+    end
+
+    new_size = unsafe_lzo_compress!(dest, src, working_memory)
+    resize!(dest, max(new_size, old_size))
+    return dest
+end
+
+lzo_compress!(dest::Vector{UInt8}, src::AbstractString, working_memory::Vector{UInt8} = zeros(UInt8, 1 << 12)) = lzo_compress!(dest, Base.CodeUnits(src), working_memory)
+
+"""
+    lzo_compress(src, [working_memory=zeros(UInt8, 1<<12)])::Vector{UInt8}
+
+Compress `src` using the LZO 1X1 algorithm.
+
+Returns a compressed version of `src`.
+
+Pass `working_memory`, a `Vector{UInt8}` with `length(working_memory) >= 1<<12`, to reuse pre-allocated memory required by the algorithm.
+"""
+function lzo_compress(src::AbstractVector{UInt8}, working_memory::Vector{UInt8} = zeros(UInt8, 1 << 12))
+    dest = UInt8[]
+    return lzo_compress!(dest, src, working_memory)
+end
+
+lzo_compress(src::AbstractString, working_memory::Vector{UInt8} = zeros(UInt8, 1 << 12)) = lzo_compress(Base.CodeUnits(src), working_memory)
 
 function TranscodingStreams.process(codec::LZO1X1FastCompressorCodec, input::Memory, output::Memory, ::Error)
 
     input_length = length(input)
     if input_length == 0
-        n_written = lzo_compress(codec.input_buffer, codec.working_memory, output)
+        n_written = unsafe_lzo_compress!(output.ptr, codec.input_buffer, codec.working_memory)
         return 0, n_written % Int, :end
     end
 
