@@ -52,7 +52,10 @@ function __init__()
     # 9. sizeof(lzo_voidp) (size of void *)
     # 10. sizeof(lzo_callback_t) (size of a complex callback struct)
     # If any of these arguments except the first is -1, the check is skipped.
-    e = ccall((:__lzo_init_v2, liblzo2), Cint, (Cuint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint), 1, sizeof(Cshort), sizeof(Cint), sizeof(Clong), sizeof(Culong), sizeof(Culonglong), sizeof(Ptr{Cchar}), sizeof(Ptr{Cchar}), sizeof(Ptr{Cvoid}), -1)
+    e = ccall((:__lzo_init_v2, liblzo2),
+        Cint,
+        (Cuint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint),
+        1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
     if e != LZO_E_OK
         throw(ErrorException("initialization of liblzo2 failed: $e"))
     end

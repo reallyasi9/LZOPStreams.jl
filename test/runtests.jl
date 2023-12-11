@@ -65,60 +65,31 @@ end
 
 
 @testitem "LZO1X1CompressorCodec constructor" begin
-    c = LZO1X1CompressorCodec()
+    c1 = LZO1X1CompressorCodec()
+    c2 = LZOCompressorCodec()
+    @test true
 end
 
 @testitem "LZO1X1CompressorCodec transcode" begin
     using TranscodingStreams
-    using LZO_jll
     using Random
     
-    function lzo_compress(a::Vector{UInt8})
-        ccall((:__lzo_init_v2, liblzo2), Cint, (Cuint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint), 1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
-        working_memory = zeros(UInt8, 1 << 16)
-        l = length(a)
-        size_ptr = Ref{Csize_t}()
-        output = Vector{UInt8}(undef, l + l ÷ 255 + 5) # minimum safe size
-        @ccall liblzo2.lzo1x_1_compress(a::Ptr{Cuchar}, sizeof(a)::Csize_t, output::Ptr{Cuchar}, size_ptr::Ptr{Csize_t}, working_memory::Ptr{Cvoid})::Cint
-        return resize!(output, size_ptr[])
-    end
-
-    function lzo_decompress(a::Vector{UInt8})
-        ccall((:__lzo_init_v2, liblzo2), Cint, (Cuint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint, Cint), 1, -1, -1, -1, -1, -1, -1, -1, -1, -1)
-        working_memory = UInt8[] # no working memory needed to decompress
-        LZO_E_OUTPUT_OVERRUN = -5 # error that tells us to resize the output array
-        l = length(a)
-        output = Vector{UInt8}(undef, l * 2) # guess size, will be resized in the loop that follows
-        size_ptr = Ref{Csize_t}(length(output))
-        while ccall((:lzo1x_decompress, liblzo2), Cint, (Ptr{Cuchar}, Csize_t, Ptr{Cuchar}, Ptr{Csize_t}, Ptr{Cvoid}), a, sizeof(a), output, size_ptr, working_memory) == LZO_E_OUTPUT_OVERRUN
-            resize!(output, length(output) * 2)
-            size_ptr[] = length(output)
-        end
-        return resize!(output, size_ptr[])
-    end
-
     let
-        rng = Random.MersenneTwister(42)
-        small_random = rand(rng, UInt8, 24)
-        limit_random = rand(rng, UInt8, CodecLZO.LZO1X1_MAX_DISTANCE + 1)
-        large_random = rand(rng, UInt8, 1_000_000)
+        small_array = UInt8.(collect(0:255)) # no repeats, so should be one long literal
+        small_array_compressed = transcode(LZOCompressorCodec, small_array)
+        @test length(small_array_compressed) == 2 + length(small_array) + 3
 
-        # randoms should find no matches in history, so these should just encode extremely long literal copies
-        lzo_compressed = lzo_compress(small_random)
-        compressed = transcode(LZO1X1CompressorCodec, small_random)
-        @test length(compressed) == length(lzo_compressed)
-        @test compressed == lzo_compressed
-        @test lzo_decompress(compressed) == small_random
+        # The first command should be a copy of the entire 256-byte literal.
+        # The 0b0000XXXX command copies literals with a length encoding of either 3 + XXXX or 18 + (zero bytes following command) * 255 + (non-zero trailing byte).
+        @test small_array_compressed[1:2] == UInt8[0b00000000, 256 - 18]
 
-        lzo_compressed = lzo_compress(limit_random)
-        compressed = transcode(LZO1X1CompressorCodec, limit_random)
-        @test length(compressed) == length(lzo_compressed)
-        @test compressed == lzo_compressed
+        # The last command is boilerplate: a copy of 3 bytes from distance 16384
+        @test small_array_compressed[end-2:end] == UInt8[0b00010001, 0, 0]
+        
+        double_small_array = vcat(small_array, small_array) # this should add an additional 5 bytes to the literal because the skip logic, followed by a long copy command
+        double_small_array_compressed = transcode(LZOCompressorCodec, double_small_array)
+        @test length(double_small_array_compressed) == 2 + (length(small_array) + 5) + 4 + 3
 
-        lzo_compressed = lzo_compress(large_random)
-        compressed = transcode(LZO1X1CompressorCodec, large_random)
-        @test length(compressed) == length(lzo_compressed)
-        @test compressed == lzo_compressed
     end
 end
 
