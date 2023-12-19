@@ -42,7 +42,7 @@ end
     end
 end
 
-@testitem "force 8-bit collisions" begin
+@testitem "HashMap force 8-bit collisions" begin
     let
         h87 = CodecLZO.HashMap{UInt8,Int}(7, UInt8(157))
         collisions = 0
@@ -62,7 +62,152 @@ end
     end
 end
 
+@testitem "LiteralCopyCommand" begin
+    let
+        null_command = CodecLZO.LiteralCopyCommand(0)
+        @test null_command == CodecLZO.NULL_LITERAL_COMMAND
 
+        for n in 1:3
+            # Super-small literals can fit in the last two bits of the previous command
+            # Except if there is no previous command...
+            @test_throws ErrorException CodecLZO.LiteralCopyCommand(n; first_literal=true)
+
+            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
+            @test lcc.copy_length == n
+            @test lcc.command_length == 0
+        end
+
+        for n in (4,238)
+            # First literals can be compactly stored
+            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=true)
+            @test lcc.copy_length == n
+            @test lcc.command_length == 1
+        end
+
+        for n in (239,)
+            # But only up to a point, where it reverts to the same as first_literal=false
+            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=true)
+            @test lcc == CodecLZO.LiteralCopyCommand(n; first_literal=false)
+        end
+
+        for n in (4,18)
+            # The first 4 bits can carry the copy length (minus 3)
+            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
+            @test lcc.copy_length == n
+            @test lcc.command_length == 1
+        end
+
+        for n in (19,273)
+            # If the length is longer, an additional byte stores the rest (minus 18)
+            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
+            @test lcc.copy_length == n
+            @test lcc.command_length == 2
+        end
+
+        for n in (274,528)
+            # Every additional 255 bytes of length is stored as a zero byte
+            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
+            @test lcc.copy_length == n
+            @test lcc.command_length == 3
+        end
+    end
+end
+
+@testitem "decode LiteralCopyCommand" begin
+    let
+        # Valid first literals
+        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[17]) == CodecLZO.LiteralCopyCommand(1,0)
+        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[255]) == CodecLZO.LiteralCopyCommand(1,238)
+
+        # Invalid first literal
+        @test_throws ErrorException CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[16])
+
+        # Long literals
+        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000001]) == CodecLZO.LiteralCopyCommand(1,4)
+        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00001111]) == CodecLZO.LiteralCopyCommand(1,18)
+        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000,0b00000001]) == CodecLZO.LiteralCopyCommand(2,19)
+        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000,0b11111111]) == CodecLZO.LiteralCopyCommand(2,273)
+        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000,0b00000000,0b00000001]) == CodecLZO.LiteralCopyCommand(3,274)
+    end
+end
+
+@testitem "encode LiteralCopyCommand" begin
+    let
+        # Valid first literals
+        output = zeros(UInt8, 4)
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,0); first_literal=true)
+        @test output == UInt8[17, 0, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,238); first_literal=true)
+        @test output == UInt8[255, 0, 0, 0]
+        
+        # Fall back to long literal
+        fill!(output, zero(UInt8))
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,239); first_literal=true) # Note: number of bytes is ignored
+        @test output == UInt8[0, 239-18, 0, 0]
+
+        # Long literals
+        fill!(output, zero(UInt8))
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,4))
+        @test output == UInt8[1, 0, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,18))
+        @test output == UInt8[0b00001111, 0, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(2,19))
+        @test output == UInt8[0, 1, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(2,273))
+        @test output == UInt8[0, 0b11111111, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(3,274))
+        @test output == UInt8[0, 0, 1, 0]
+    end
+end
+
+@testitem "unsafe_encode LiteralCopyCommand" begin
+    let
+        # Valid first literals
+        output = zeros(UInt8, 4)
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,0); first_literal=true)
+        @test output == UInt8[17, 0, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,238); first_literal=true)
+        @test output == UInt8[255, 0, 0, 0]
+        
+        # Fall back to long literal
+        fill!(output, zero(UInt8))
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,239); first_literal=true) # Note: number of bytes is ignored
+        @test output == UInt8[0, 239-18, 0, 0]
+
+        # Long literals
+        fill!(output, zero(UInt8))
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,4))
+        @test output == UInt8[1, 0, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,18))
+        @test output == UInt8[0b00001111, 0, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(2,19))
+        @test output == UInt8[0, 1, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(2,273))
+        @test output == UInt8[0, 0b11111111, 0, 0]
+
+        fill!(output, zero(UInt8))
+        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(3,274))
+        @test output == UInt8[0, 0, 1, 0]
+    end
+end
 
 @testitem "LZO1X1CompressorCodec constructor" begin
     c1 = LZO1X1CompressorCodec()

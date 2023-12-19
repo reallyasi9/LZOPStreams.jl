@@ -7,25 +7,6 @@
     END_OF_STREAM
 end
 
-struct LiteralCopyCommand
-    command_length::Int
-    copy_length::Int
-end
-
-struct HistoryCopyCommand
-    command_length::Int
-    lookback::Int
-    copy_length::Int
-    post_copy_literals::UInt8
-end
-
-const NULL_LITERAL_COMMAND = LiteralCopyCommand(0, 0)
-const NULL_HISTORY_COMMAND = HistoryCopyCommand(0, 0, 0, 0)
-const END_OF_STREAM_COMMAND = HistoryCopyCommand(3, 16384, 3, 0) # Corresponds to byte sequence 0x11 0x00 0x00
-
-struct InputNotConsumedException <: Exception end
-struct FormatException <: Exception end
-
 """
     LZO1X1DecompressorCodec <: TranscodingStreams.Codec
 
@@ -91,96 +72,6 @@ function TranscodingStreams.startproc(codec::LZO1X1DecompressorCodec, ::Symbol, 
     codec.remaining_literals = 0
     codec.last_literals_copied = 0
     return :ok
-end
-
-function decode_run_length(input::Union{Vector{UInt8}, Memory}, start_index::Int, bits::Int)
-    mask = ((1 << bits) - 1) % UInt8
-    byte = input[start_index] & mask
-    len = byte % Int
-    if len != 0
-        return 1, len
-    end
-
-    input_length = length(input)
-    if start_index == input_length
-        return 0, 0
-    end
-
-    bytes = 1
-    byte = input[start_index + bytes]
-    while byte == 0 && start_index + bytes < input_length
-        len += 255
-        bytes += 1
-        byte = input[start_index + bytes]
-    end
-
-    if byte == 0
-        return 0, 0
-    end
-
-    return bytes + 1, len + byte + mask
-end
-
-function decypher_copy(input::Union{Vector{UInt8}, Memory}, start_index::Int, last_literals_copied::UInt8)
-    remaining_bytes = length(input) - start_index + 1
-    command = input[start_index]
-
-    # 2-byte commands first
-    if remaining_bytes < 2
-        return NULL_HISTORY_COMMAND
-    elseif command < 0b00010000
-        after = command & 0b00000011
-        if last_literals_copied > 0 && last_literals_copied < 4
-            len = 2
-            dist = ((input[start_index + 1] % Int) << 2) + ((command & 0b00001100) >> 2) + 1
-        else
-            len = 3
-            dist = ((input[start_index + 1] % Int) << 2) + ((command & 0b00001100) >> 2) + 2049
-        end
-        return HistoryCopyCommand(2, dist, len, after)
-    elseif (command & 0b11000000) != 0
-        after = command & 0b00000011
-        if command < 0b10000000
-            len = 3 + ((command & 0b00100000) >> 5)
-            dist = ((input[start_index + 1] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
-        else
-            len = 5 + ((command & 0b01100000) >> 5)
-            dist = ((input[start_index + 1] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
-        end
-        return HistoryCopyCommand(2, dist, len, after)
-    elseif command < 0b00100000
-        # variable-width length encoding
-        msb = ((command & 0b00001000) % Int) << 11
-        bytes, len = decode_run_length(input, start_index, 3)
-        if bytes == 0 || remaining_bytes < bytes + 2
-            return NULL_HISTORY_COMMAND
-        end
-        dist = 16384 + msb + ((input[start_index + bytes + 1] % Int) << 6) + ((input[start_index + bytes] % Int) >> 2)
-        after = input[start_index + bytes] & 0b00000011
-        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
-    else
-        # variable-width length encoding
-        bytes, len = decode_run_length(input, start_index, 5)
-        if bytes == 0 || remaining_bytes < bytes + 2
-            return NULL_HISTORY_COMMAND
-        end
-        dist = 1 + ((input[start_index + bytes + 1] % Int) << 6) + ((input[start_index + bytes] % Int) >> 2)
-        after = input[start_index + bytes] & 0b00000011
-        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
-    end
-end
-
-function decypher_literal(input::Union{Vector{UInt8}, Memory}, start_index::Int)
-    command = input[start_index]
-    if command < 0b00010000
-        bytes, len = decode_run_length(input, start_index, 4)
-        if bytes == 0
-            return NULL_LITERAL_COMMAND
-        end
-        return LiteralCopyCommand(bytes, len + 3)
-    else
-        return LiteralCopyCommand(1, command - 17)
-    end
 end
 
 function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memory, output::Memory, error::Error)

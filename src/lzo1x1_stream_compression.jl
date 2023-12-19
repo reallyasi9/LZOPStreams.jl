@@ -133,32 +133,6 @@ function TranscodingStreams.finalize(codec::LZO1X1CompressorCodec)
     return
 end
 
-"""
-    n_written = encode_run(output, start_index, len, bits)
-
-Emit the number of zero bytes necessary to encode a length `len` in a command expecting `bits` leading bits.
-
-Literal and copy lengths are always encoded as either a single byte or a sequence of three or more bytes. If `len < (1 << bits)`, the length will be encoded in the lower `bits` bits of the starting byte of `output` so the return will be 0. Otherwise, the return will be the number of additional bytes needed to encode the length. The returned number of bytes does not include the zeros in the first byte (the command) used to signal that a run encoding follows, but it does include the remainder.
-
-Note: the argument `len` is expected to be the _adjusted length_ for the command. Literals use an adjusted length of `len = length(literal) - 3` and copy commands use an adjusted literal length of `len = length(copy) - 2`.
-"""
-function encode_run!(output::Union{AbstractVector{UInt8},Memory}, start_index::Int, len::Int, bits::Int)
-    output[start_index] = zero(UInt8) # clear the bits just in case
-    mask = UInt8(1 << bits - 1)
-    if len <= mask
-        output[start_index] |= len % UInt8
-        return 1
-    end
-    len -= mask
-    n_written = 1
-    while len > 255
-        len -= 255
-        output[start_index + n_written] = zero(UInt8)
-        n_written += 1
-    end
-    output[start_index + n_written] = len % UInt8
-    return n_written + 1
-end
 
 function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
 
@@ -176,53 +150,6 @@ function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
     return -1, input_idx
 end
 
-function encode_literal_length!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{UInt8},Memory}, start_index::Int)
-
-    # In LZO1X1, the first literal is always at least 4 bytes and, if it is small, is 
-    # specially coded.
-    len = length(codec.output_buffer)
-
-    if codec.state == FIRST_LITERAL
-        # This is completely valid for the first literal, but liblzo2 doesn't use this special encoding
-        if len < (0xff - 17)
-            output[start_index] = (len+17) % UInt8
-            codec.previous_literal_length = len
-            return 1
-        else
-            output[start_index] = zero(UInt8)
-            codec.previous_literal_length = len
-            return encode_run!(output, start_index, len-3, 4)
-        end
-    end
-
-    # Except for the first literal, literal copies always follow history copies, so a command should always be in the buffer.
-
-    output[start_index] = popfirst!(codec.output_buffer)
-    n_written = 1
-    len -= 1 # we just popped off of the buffer, so account for it here
-
-    if !codec.previous_copy_command_was_short
-        output[start_index+1] = popfirst!(codec.output_buffer)
-        n_written += 1
-        len -= 1 # again, we just popped something off the buffer, so the literal is a little shorter
-    end
-
-    codec.previous_literal_length = len
-
-    # 2-bit literal lengths are encoded in the low two bits of the previous command.
-    # Interestingly, because the distance is encoded in LE, the 2-bit literal incoding is always on the first byte of the output buffer.
-    if len < 4
-        output[start_index] &= 0b11111100
-        output[start_index] |= len % UInt8
-        return n_written
-    end
-
-    # everything else is encoded raw or as a run of unary zeros plus a remainder
-    len -= 3
-    n_written += encode_run!(output, start_index + n_written, len, LZO1X1_RUN_BITS)
-    
-    return n_written
-end
 
 # Write a literal from `codec.output_buffer` to `output` starting at `start_index`.
 # Returns the number of bytes written to output and a status flag.
