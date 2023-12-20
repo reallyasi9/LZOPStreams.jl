@@ -209,6 +209,172 @@ end
     end
 end
 
+@testitem "HistoryCopyCommand" begin
+    let
+        null_command = CodecLZO.HistoryCopyCommand(0,0,0,0)
+        @test null_command == CodecLZO.NULL_HISTORY_COMMAND
+
+        # first by size of copy, then by distance of copy
+
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1, 0, 0) # too short
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1, 1, 0) # too short
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(0, 2, 0) # too near
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1, 2, 4) # too many post-copy literals
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(49153, 2, 0) # too far
+
+        # length = 2 is special
+        for d in (1,1024)
+            # This is only allowed if the number of literals copied last was 1, 2, or 3.
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 2, 0; last_literals_copied=1)
+                @test hcc.command_length == 2
+                @test hcc.lookback == d
+                @test hcc.copy_length == 2
+            end
+        end
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1025, 2, 0; last_literals_copied=1)
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1024, 2, 0; last_literals_copied=0)
+        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1024, 2, 0; last_literals_copied=4)
+
+        # length = 3 has four zones
+        for d in (1,2048)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0)
+                @test hcc.command_length == 2
+                @test hcc.lookback == d
+                @test hcc.copy_length == 3
+            end
+        end
+        for d in (2049,3072)
+            # This zone is special and is only available if the previous copy command included extra literals
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0; last_literals_copied=4)
+                @test hcc.command_length == 2
+                @test hcc.lookback == d
+                @test hcc.copy_length == 3
+            end
+        end
+        for d in (3073,16384)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0)
+                @test hcc.command_length == 3
+                @test hcc.lookback == d
+                @test hcc.copy_length == 3
+            end
+        end
+        for d in (16385,49152)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0)
+                @test hcc.command_length == 3
+                @test hcc.lookback == d
+                @test hcc.copy_length == 3
+            end
+        end
+
+        # length = 4 has only 3 zones
+        for d in (1,2048)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 4, 0)
+                @test hcc.command_length == 2
+                @test hcc.lookback == d
+                @test hcc.copy_length == 4
+            end
+        end
+        for d in (2049,16384)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 4, 0)
+                @test hcc.command_length == 3
+                @test hcc.lookback == d
+                @test hcc.copy_length == 4
+            end
+        end
+        for d in (16385,49152)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 4, 0)
+                @test hcc.command_length == 3
+                @test hcc.lookback == d
+                @test hcc.copy_length == 4
+            end
+        end
+
+        # length = 5 through 8 have 3 zones also
+        for l in 5:8
+            for d in (1,2048)
+                let
+                    hcc = CodecLZO.HistoryCopyCommand(d, l, 0)
+                    @test hcc.command_length == 2
+                    @test hcc.lookback == d
+                    @test hcc.copy_length == l
+                end
+            end
+            for d in (2049,16384)
+                let
+                    hcc = CodecLZO.HistoryCopyCommand(d, l, 0)
+                    @test hcc.command_length == 3
+                    @test hcc.lookback == d
+                    @test hcc.copy_length == l
+                end
+            end
+            for d in (16385,49152)
+                let
+                    hcc = CodecLZO.HistoryCopyCommand(d, l, 0)
+                    @test hcc.command_length == 3
+                    @test hcc.lookback == d
+                    @test hcc.copy_length == l
+                end
+            end
+        end
+
+        # lengths greater than 8 have only 2 zones
+        for d in (1,16384)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 9, 0)
+                @test hcc.command_length == 3
+                @test hcc.lookback == d
+                @test hcc.copy_length == 9
+            end
+        end
+        for d in (16385,49152)
+            let
+                hcc = CodecLZO.HistoryCopyCommand(d, 9, 0)
+                @test hcc.command_length == 3
+                @test hcc.lookback == d
+                @test hcc.copy_length == 9
+            end
+        end
+
+        # lengths are run-length encoded
+        # closer copies break at 33, farther copies break at 9
+        let
+            hcc = CodecLZO.HistoryCopyCommand(16385, 9, 0)
+            @test hcc.command_length == 3
+
+            hcc = CodecLZO.HistoryCopyCommand(16385, 10, 0)
+            @test hcc.command_length == 4
+
+            hcc = CodecLZO.HistoryCopyCommand(16385, 264, 0)
+            @test hcc.command_length == 4
+
+            hcc = CodecLZO.HistoryCopyCommand(16385, 265, 0)
+            @test hcc.command_length == 5
+        end
+
+        let
+            hcc = CodecLZO.HistoryCopyCommand(1, 33, 0)
+            @test hcc.command_length == 3
+
+            hcc = CodecLZO.HistoryCopyCommand(1, 34, 0)
+            @test hcc.command_length == 4
+
+            hcc = CodecLZO.HistoryCopyCommand(1, 288, 0)
+            @test hcc.command_length == 4
+
+            hcc = CodecLZO.HistoryCopyCommand(1, 289, 0)
+            @test hcc.command_length == 5
+        end
+    end
+end
+
 @testitem "LZO1X1CompressorCodec constructor" begin
     c1 = LZO1X1CompressorCodec()
     c2 = LZOCompressorCodec()

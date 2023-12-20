@@ -398,21 +398,23 @@ end
 const NULL_HISTORY_COMMAND = HistoryCopyCommand(0, 0, 0, 0)
 const END_OF_STREAM_COMMAND = HistoryCopyCommand(3, 16384, 3, 0) # Corresponds to byte sequence 0x11 0x00 0x00
 
-function HistoryCopyCommand(lookback::Integer, copy_length::Integer, post_copy_literals::Integer)
+function HistoryCopyCommand(lookback::Integer, copy_length::Integer, post_copy_literals::Integer; last_literals_copied::Integer=4)
     if copy_length < 2 || lookback < 1 || post_copy_literals > 3
         # history copies of 1 byte or zero distance are not allowed
-        return NULL_HISTORY_COMMAND
+        throw(ErrorException("copy length ($copy_length), lookback ($lookback), post-copy literal ($post_copy_literals) combination not allowed"))
     end
     command_length = 0
     if copy_length == 2
-        if lookback > 1 << 11
-            return NULL_HISTORY_COMMAND
+        if lookback > 1 << 10 || last_literals_copied < 1 || last_literals_copied > 3
+            throw(ErrorException("copy length 2 must have a lookback less than $(1<<10) (got $lookback) and last literals copied between 1 and 3 (got $last_literals_copied)"))
         else
             command_length = 2
         end
-    elseif lookback <= 1 << 12 && copy_length <= 8
+    elseif copy_length == 3 && 2048 < lookback <= 3072 && last_literals_copied >= 4
         command_length = 2
-    elseif lookback <= 1 << 15
+    elseif lookback <= 1 << 11 && copy_length <= 8
+        command_length = 2
+    elseif lookback <= 1 << 14
         b, _ = compute_run_remainder(copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS)
         command_length = 2 + b
     else
