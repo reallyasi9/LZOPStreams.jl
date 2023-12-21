@@ -83,7 +83,7 @@ function unsafe_encode_run!(p::Ptr{UInt8}, len::Integer, bits::Integer, i::Integ
     unsafe_store!(p, zero(UInt8), i) # clear the bits just in case
     mask = UInt8((1 << bits) - 1)
     if len <= mask
-        unsafe_store!(p, unsafe_load(p, i) | len % UInt8)
+        unsafe_store!(p, unsafe_load(p, i) | len % UInt8, i)
         return 1
     end
     n_zeros, len = divrem(len-mask, 255)
@@ -250,6 +250,9 @@ end
 
 function unsafe_decode(::Type{LiteralCopyCommand}, p::Ptr{UInt8}, i::Integer=1)
     command = unsafe_load(p, i)
+    if command == 16
+        throw(ErrorException("invalid literal copy command detected"))
+    end
     if command < 0b00010000
         bytes, len = unsafe_decode_run(p, i, 4)
         return LiteralCopyCommand(bytes, len + 3)
@@ -443,9 +446,11 @@ function decode(::Type{HistoryCopyCommand}, data::AbstractVector{UInt8}; last_li
         if last_literals_copied > 0 && last_literals_copied < 4
             len = 2
             dist = ((data[2] % Int) << 2) + ((command & 0b00001100) >> 2) + 1
-        else
+        elseif last_literals_copied >= 4
             len = 3
             dist = ((data[2] % Int) << 2) + ((command & 0b00001100) >> 2) + 2049
+        else
+            throw(ErrorException("command 00000000 with zero last literals copied is a literal copy command: call decode(LiteralCopyCommand, data) instead"))
         end
         return HistoryCopyCommand(2, dist, len, after)
     elseif (command & 0b11000000) != 0
@@ -461,7 +466,7 @@ function decode(::Type{HistoryCopyCommand}, data::AbstractVector{UInt8}; last_li
     elseif command < 0b00100000
         # variable-width length encoding
         msb = ((command & 0b00001000) % Int) << 11
-        bytes, len = decode_run_length(data, 1, LONG_DISTANCE_HISTORY_MASK_BITS)
+        bytes, len = decode_run(data, LONG_DISTANCE_HISTORY_MASK_BITS)
         if bytes == 0 || remaining_bytes < bytes + 2
             return NULL_HISTORY_COMMAND
         end
@@ -470,7 +475,7 @@ function decode(::Type{HistoryCopyCommand}, data::AbstractVector{UInt8}; last_li
         return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
     else
         # variable-width length encoding
-        bytes, len = decode_run_length(input, 1, SHORT_DISTANCE_HISTORY_MASK_BITS)
+        bytes, len = decode_run(data, SHORT_DISTANCE_HISTORY_MASK_BITS)
         if bytes == 0 || remaining_bytes < bytes + 2
             return NULL_HISTORY_COMMAND
         end
@@ -489,9 +494,11 @@ function unsafe_decode(::Type{HistoryCopyCommand}, p::Ptr{UInt8}, i::Integer = 1
         if last_literals_copied > 0 && last_literals_copied < 4
             len = 2
             dist = ((unsafe_load(p, i+1) % Int) << 2) + ((command & 0b00001100) >> 2) + 1
-        else
+        elseif last_literals_copied >= 4
             len = 3
             dist = ((unsafe_load(p, i+1) % Int) << 2) + ((command & 0b00001100) >> 2) + 2049
+        else
+            throw(ErrorException("command 00000000 with zero last literals copied is a literal copy command: call decode(LiteralCopyCommand, data) instead"))
         end
         return HistoryCopyCommand(2, dist, len, after)
     elseif (command & 0b11000000) != 0
@@ -507,7 +514,7 @@ function unsafe_decode(::Type{HistoryCopyCommand}, p::Ptr{UInt8}, i::Integer = 1
     elseif command < 0b00100000
         # variable-width length encoding
         msb = ((command & 0b00001000) % Int) << 11
-        bytes, len = unsafe_decode_run_length(p, i, LONG_DISTANCE_HISTORY_MASK_BITS)
+        bytes, len = unsafe_decode_run(p, i, LONG_DISTANCE_HISTORY_MASK_BITS)
         if bytes == 0
             return NULL_HISTORY_COMMAND
         end
@@ -516,7 +523,7 @@ function unsafe_decode(::Type{HistoryCopyCommand}, p::Ptr{UInt8}, i::Integer = 1
         return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
     else
         # variable-width length encoding
-        bytes, len = unsafe_decode_run_length(p, i, SHORT_DISTANCE_HISTORY_MASK_BITS)
+        bytes, len = unsafe_decode_run(p, i, SHORT_DISTANCE_HISTORY_MASK_BITS)
         if bytes == 0
             return NULL_HISTORY_COMMAND
         end
@@ -526,23 +533,33 @@ function unsafe_decode(::Type{HistoryCopyCommand}, p::Ptr{UInt8}, i::Integer = 1
     end
 end
 
-function encode!(data::AbstractVector{UInt8}, c::HistoryCopyCommand; last_literals_copied::Integer = 0)
-    # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
-
-    if last_literals_copied < 4 && c.copy_length == 2 && c.lookback <= 1024
-        # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
-        distance = c.lookback - 1
-        D = UInt8(distance & 0b00000011)
-        H = UInt8((distance - D) >> 2)
-        data[1] = D << 2
-        data[2] = H
+function encode!(data::AbstractVector{UInt8}, c::HistoryCopyCommand; last_literals_copied::Integer=0)
+    if c == END_OF_STREAM_COMMAND
+        data[1:3] = UInt8[0b00010001,0b00000000,0b00000000]
         return data
+    end
+
+    # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
+    if c.copy_length == 2
+        if last_literals_copied == 0
+            throw(ErrorException("invalid length 2 copy command with zero last literals copied"))
+        elseif last_literals_copied < 4 && c.lookback <= 1024
+            # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
+            distance = c.lookback - 1
+            D = UInt8(distance & 0b00000011)
+            H = UInt8((distance - D) >> 2)
+            data[1] = (D << 2) | c.post_copy_literals
+            data[2] = H
+            return data
+        else
+            throw(ErrorException("invalid length 2 copy command with last literals copied greater than 3 (got $last_literals_copied) or lookback greater than 1024 (got $(c.lookback))"))
+        end
     elseif last_literals_copied >= 4 && c.copy_length == 3 && 2049 <= c.lookback <= 3072
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 2049
         distance = c.lookback - 2049
         D = UInt8(distance & 0b00000011)
         H = UInt8((distance - D) >> 2)
-        data[1] = D << 2
+        data[1] = (D << 2) | c.post_copy_literals
         data[2] = H
         return data
     elseif 3 <= c.copy_length <= 4 && c.lookback < 2049
@@ -551,7 +568,7 @@ function encode!(data::AbstractVector{UInt8}, c::HistoryCopyCommand; last_litera
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
         L = UInt8(c.copy_length - 3)
-        data[1] = 0b01000000 | (L << 5) | (D << 2)
+        data[1] = 0b01000000 | (L << 5) | (D << 2) | c.post_copy_literals
         data[2] = H
         return data
     elseif 5 <= c.copy_length <= 8 && c.lookback <= 2049
@@ -560,12 +577,15 @@ function encode!(data::AbstractVector{UInt8}, c::HistoryCopyCommand; last_litera
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
         L = UInt8(c.copy_length - 5)
-        data[1] = 0b10000000 | (L << 5) | (D << 2)
+        data[1] = 0b10000000 | (L << 5) | (D << 2) | c.post_copy_literals
         data[2] = H
         return data
     else
         distance = c.lookback
-        if distance < 16384
+        # NOTE: a distance of 16384 can be encoded in two different ways (this and the command that follows)
+        # HOWEVER, end-of-stream is identical to a copy of 3 bytes from a lookback of 16384, so
+        # lookbacks of 16384 are always encoded with this command.
+        if distance <= 16384
             # 0b001LLLLL_*_DDDDDDSS_DDDDDDDD, distance = D + 1, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
             n_written = encode_run!(data, c.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS)
@@ -582,30 +602,42 @@ function encode!(data::AbstractVector{UInt8}, c::HistoryCopyCommand; last_litera
         end
         DH = UInt8((distance >> 6) & 0b11111111)
         DL = UInt8(distance & 0b00111111)
-        data[n_written+1] = DL << 2 # This is popped off the top with popfirst! when encoding the next literal length
+        data[n_written+1] = (DL << 2) | c.post_copy_literals # This is popped off the top with popfirst! when encoding the next literal length
         data[n_written+2] = DH
         return data
     end
 end
 
 function unsafe_encode!(p::Ptr{UInt8}, c::HistoryCopyCommand, i::Integer = 1; last_literals_copied::Integer = 0)
-    # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
+    if c == END_OF_STREAM_COMMAND
+        unsafe_store!(p, 0b00010001, i)
+        unsafe_store!(p, 0b00000000, i+1)
+        unsafe_store!(p, 0b00000000, i+2)
+        return 3
+    end
 
-    if last_literals_copied < 4 && c.copy_length == 2 && c.lookback <= 1024
-        # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
-        distance = c.lookback - 1
-        D = UInt8(distance & 0b00000011)
-        H = UInt8((distance - D) >> 2)
-        unsafe_store!(p, i, D << 2)
-        unsafe_store!(p, i + 1, D << 2)
-        return 2
+    # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
+    if c.copy_length == 2
+        if last_literals_copied == 0
+            throw(ErrorException("invalid length 2 copy command with zero last literals copied"))
+        elseif last_literals_copied < 4 && c.lookback <= 1024
+            # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
+            distance = c.lookback - 1
+            D = UInt8(distance & 0b00000011)
+            H = UInt8((distance - D) >> 2)
+            unsafe_store!(p, (D << 2) | c.post_copy_literals, i)
+            unsafe_store!(p, H, i+1)
+            return 2
+        else
+            throw(ErrorException("invalid length 2 copy command with last literals copied greater than 3 (got $last_literals_copied) or lookback greater than 1024 (got $(c.lookback))"))
+        end
     elseif last_literals_copied >= 4 && c.copy_length == 3 && 2049 <= c.lookback <= 3072
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 2049
         distance = c.lookback - 2049
         D = UInt8(distance & 0b00000011)
         H = UInt8((distance - D) >> 2)
-        unsafe_store!(p, i, D << 2)
-        unsafe_store!(p, i + 1, H)
+        unsafe_store!(p, (D << 2) | c.post_copy_literals, i)
+        unsafe_store!(p, H, i+1)
         return 2
     elseif 3 <= c.copy_length <= 4 && c.lookback < 2049
         # 0b01LDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
@@ -613,8 +645,8 @@ function unsafe_encode!(p::Ptr{UInt8}, c::HistoryCopyCommand, i::Integer = 1; la
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
         L = UInt8(c.copy_length - 3)
-        unsafe_store!(p, i, 0b01000000 | (L << 5) | (D << 2))
-        unsafe_store!(p, i + 1, H)
+        unsafe_store!(p, 0b01000000 | (L << 5) | (D << 2) | c.post_copy_literals, i)
+        unsafe_store!(p, H, i+1)
         return 2
     elseif 5 <= c.copy_length <= 8 && c.lookback <= 2049
         # 0b1LLDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
@@ -622,30 +654,32 @@ function unsafe_encode!(p::Ptr{UInt8}, c::HistoryCopyCommand, i::Integer = 1; la
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
         L = UInt8(c.copy_length - 5)
-        unsafe_store!(p, i, 0b10000000 | (L << 5) | (D << 2))
-        unsafe_store!(p, i + 1, H)
+        unsafe_store!(p, 0b10000000 | (L << 5) | (D << 2) | c.post_copy_literals, i)
+        unsafe_store!(p, H, i+1)
         return 2
     else
         distance = c.lookback
-        if distance < 16384
+        # NOTE: a distance of 16384 can be encoded in two different ways (this and the command that follows)
+        # HOWEVER, end-of-stream is identical to a copy of 3 bytes from a lookback of 16384, so
+        # lookbacks of 16384 are always encoded with this command.
+        if distance <= 16384
             # 0b001LLLLL_*_DDDDDDSS_DDDDDDDD, distance = D + 1, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
             run = unsafe_encode_run!(p, i, c.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS)
-            unsafe_store!(p, i, unsafe_load(p, i) | 0b00100000)
+            unsafe_store!(p, unsafe_load(p, i) | 0b00100000, i)
             distance -= 1
         else
             # 0b0001HLLL_*_DDDDDDSS_DDDDDDDD, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
             run = unsafe_encode_run!(p, i, c.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
-            unsafe_store!(p, i, unsafe_load(p, i) | 0b00010000)
             distance -= 16384
             H = UInt8((distance >> 14) & 1)
-            unsafe_store!(p, i, unsafe_load(p, i) | H << 3)
+            unsafe_store!(p, unsafe_load(p, i) | 0b00010000 | (H << 3), i)
         end
         DH = UInt8((distance >> 6) & 0b11111111)
         DL = UInt8(distance & 0b00111111)
-        unsafe_store!(p, i + run, DL << 2) # This is popped off the top with popfirst! when encoding the next literal length
-        unsafe_store!(p, i + run + 1, DH)
+        unsafe_store!(p, (DL << 2) | c.post_copy_literals, i+run) # This is popped off the top with popfirst! when encoding the next literal length
+        unsafe_store!(p, DH, i+run+1)
         return run + 1
     end
 end
