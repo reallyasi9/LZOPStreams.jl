@@ -153,7 +153,7 @@ end
 
 # Write a literal from `codec.output_buffer` to `output` starting at `start_index`.
 # Returns the number of bytes written to output and a status flag.
-function emit_literal!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{UInt8},Memory}, start_index::Int)
+function emit_literal!(codec::LZO1X1CompressorCodec, output::Memory, start_index::Int)
     n_written = encode_literal_length!(codec, output, start_index)
     len = length(codec.output_buffer)
     unsafe_copyto!(output, start_index + n_written, codec.output_buffer, 1, len)
@@ -162,7 +162,7 @@ function emit_literal!(codec::LZO1X1CompressorCodec, output::Union{AbstractVecto
 end
 
 # End of stream is a copy of bytes from a distance of zero in the history
-function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{UInt8},Memory}, start_index::Int)
+function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Memory, start_index::Int)
     # in the middle of a history lookup means I can write that now
     n_written = 0
     if codec.state == HISTORY
@@ -170,6 +170,7 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Union{Abstract
             @view(codec.input_buffer[codec.read_head:codec.write_head-1]),
             @view(codec.input_buffer[codec.match_start_index:codec.write_head-1]))
         distance = codec.read_head - codec.match_start_index
+        command = HistoryCopyCommand(distance, n_matching, 0)
         n_written += emit_copy!(codec, output, start_index, distance, n_matching)
         codec.read_head += n_matching
         codec.state = LITERAL
@@ -189,7 +190,7 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Union{Abstract
     return n_written + 3
 end
 
-function emit_copy!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{UInt8},Memory}, start_index::Int, distance::Int, N::Int)
+function emit_copy!(codec::LZO1X1CompressorCodec, output::Memory, start_index::Int, distance::Int, N::Int)
     # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
 
     if codec.previous_literal_length < 4 && N == 2 && distance <= 1024
@@ -257,7 +258,7 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{U
     end
 end
 
-function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVector{UInt8}, Memory}, input_start::Int)
+function consume_input!(codec::LZO1X1CompressorCodec, input::Memory, input_start::Int)
     len = (length(input) - input_start + 1) % Int # length(input) is UInt
     to_copy = min(len, LZO1X1_MAX_DISTANCE)
     # Memory objects do not allow range indexing, and circular vectors do not allow copyto!
@@ -269,7 +270,7 @@ function consume_input!(codec::LZO1X1CompressorCodec, input::Union{AbstractVecto
 end
 
 
-function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Union{AbstractVector{UInt8}, Memory}, output_start::Int)
+function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Memory, output_start::Int)
     input_length = codec.write_head - codec.read_head
 
     # nothing compresses to nothing

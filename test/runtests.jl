@@ -580,57 +580,57 @@ end
     let
         # Length 2 copy from short distance
         for llc in 1:3
-            @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=llc); last_literals_copied=llc)
+            @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=llc); last_literals_copied=llc)
             @test output[1:2] == UInt8[0b00000000,0b00000000]
         end
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1024, 2, 3; last_literals_copied=1); last_literals_copied=1)
+        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1024, 2, 3; last_literals_copied=1); last_literals_copied=1)
         @test output[1:2] == UInt8[0b00001111,0b11111111]
 
         # Bad LLC
         @test_throws ErrorException @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=1); last_literals_copied=0)
 
         # Length 3 copy from short distance
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2049, 3, 0; last_literals_copied=4); last_literals_copied=4)
+        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2049, 3, 0; last_literals_copied=4); last_literals_copied=4)
         @test output[1:2] == UInt8[0b00000000,0b00000000]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(3072, 3, 3; last_literals_copied=typemax(Int)); last_literals_copied=typemax(Int))
+        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(3072, 3, 3; last_literals_copied=typemax(Int)); last_literals_copied=typemax(Int))
         @test output[1:2] == UInt8[0b00001111,0b11111111]
 
         # Copies from long distances
         # Note that this is ambiguous with the short-to-medium command below and is never chosen by the encoder!
         # @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 3, 0))
         # @test output[1:3] == UInt8[0b00010001,0b00000000,0b00000000]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16385, 3, 0))
+        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16385, 3, 0))
         @test output[1:3] == UInt8[0b00010001,0b00000100,0b00000000]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 9, 3))
+        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 9, 3))
         @test output[1:3] == UInt8[0b00011111,0b11111111,0b11111111]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 10, 3))
+        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 10, 3))
         @test output[1:4] == UInt8[0b00011000,0b00000001,0b11111111,0b11111111]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 264, 3))
+        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 264, 3))
         @test output[1:4] == UInt8[0b00011000,0b11111111,0b11111111,0b11111111]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 265, 3))
+        @GC.preserve output @test 5 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 265, 3))
         @test output[1:5] == UInt8[0b00011000,0b00000000,0b00000001,0b11111111,0b11111111]
 
         # Copies from short to medium distances
         # Note that any length shorter than 9 bytes and closer than 2kB distance is more efficiently stored as a fixed 2-byte command
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 9, 0))
+        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 9, 0))
         @test output[1:3] == UInt8[0b00100111,0b00000000,0b00000000]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 33, 3))
+        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 33, 3))
         @test output[1:3] == UInt8[0b00111111,0b11111111,0b11111111]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 34, 3))
+        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 34, 3))
         @test output[1:4] == UInt8[0b00100000,0b00000001,0b11111111,0b11111111]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 288, 3))
+        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 288, 3))
         @test output[1:4] == UInt8[0b00100000,0b11111111,0b11111111,0b11111111]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 289, 3))
+        @GC.preserve output @test 5 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 289, 3))
         @test output[1:5] == UInt8[0b00100000,0b00000000,0b00000001,0b11111111,0b11111111]
 
         # Short copies from short distances
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 3, 0))
+        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 3, 0))
         @test output[1:2] == UInt8[0b01000000,0b00000000]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2048, 4, 3))
+        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2048, 4, 3))
         @test output[1:2] == UInt8[0b01111111,0b11111111]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 5, 0))
+        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 5, 0))
         @test output[1:2] == UInt8[0b10000000,0b00000000]
-        @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2048, 8, 3))
+        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2048, 8, 3))
         @test output[1:2] == UInt8[0b11111111,0b11111111]
     end
 end

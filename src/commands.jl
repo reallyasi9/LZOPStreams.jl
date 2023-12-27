@@ -665,13 +665,13 @@ function unsafe_encode!(p::Ptr{UInt8}, c::HistoryCopyCommand, i::Integer = 1; la
         if distance <= 16384
             # 0b001LLLLL_*_DDDDDDSS_DDDDDDDD, distance = D + 1, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
-            run = unsafe_encode_run!(p, i, c.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS)
+            run = unsafe_encode_run!(p, c.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS, i)
             unsafe_store!(p, unsafe_load(p, i) | 0b00100000, i)
             distance -= 1
         else
             # 0b0001HLLL_*_DDDDDDSS_DDDDDDDD, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
-            run = unsafe_encode_run!(p, i, c.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
+            run = unsafe_encode_run!(p, c.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS, i)
             distance -= 16384
             H = UInt8((distance >> 14) & 1)
             unsafe_store!(p, unsafe_load(p, i) | 0b00010000 | (H << 3), i)
@@ -680,7 +680,7 @@ function unsafe_encode!(p::Ptr{UInt8}, c::HistoryCopyCommand, i::Integer = 1; la
         DL = UInt8(distance & 0b00111111)
         unsafe_store!(p, (DL << 2) | c.post_copy_literals, i+run) # This is popped off the top with popfirst! when encoding the next literal length
         unsafe_store!(p, DH, i+run+1)
-        return run + 1
+        return run + 2
     end
 end
 
