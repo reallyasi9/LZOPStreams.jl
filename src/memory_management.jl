@@ -29,49 +29,11 @@ end
 reinterpret_next(::UInt8, input::AbstractVector{UInt8}, index::Int = 1) = input[index]
 reinterpret_next(::Int8, input::AbstractVector{UInt8}, index::Int = 1) = input[index] % Int8
 
-function Base.pointer(m::Memory, i::Int = 1)
+Base.@propagate_inbounds function Base.pointer(m::Memory, i::Int = 1)
+    @boundscheck if i > m.size
+        throw(BoundsError(m, i))
+    end
     return m.ptr + i - 1
-end
-
-function Base.unsafe_copyto!(dest::AbstractVector{UInt8}, di::Integer, src::Memory, si::Integer, N::Integer)
-    GC.@preserve dest unsafe_copyto!(pointer(dest, di), pointer(src, si), N)
-    return dest
-end
-
-function Base.unsafe_copyto!(dest::Memory, di::Integer, src::AbstractVector{UInt8}, si::Integer, N::Integer)
-    GC.@preserve src unsafe_copyto!(pointer(dest, di), pointer(src, si), N)
-    return dest
-end
-
-function Base.copyto!(dest::Memory, di::Integer, src::AbstractVector{UInt8}, si::Integer, N::Integer)
-    @boundscheck checkbounds(dest, di + N - 1)
-    unsafe_copyto!(dest, di, src, si, N)
-    return dest
-end
-
-function Base.copyto!(dest::AbstractVector{UInt8}, di::Integer, src::Memory, si::Integer, N::Integer)
-    @boundscheck checkbounds(dest, di + N - 1)
-    unsafe_copyto!(dest, di, src, si, N)
-    return dest
-end
-
-function Base.copyto!(dest::CircularVector{UInt8}, di::Integer, src::Memory, si::Integer, N::Integer)
-    @inbounds for i in 0:N-1
-        dest[di+i] = src[si+i]
-    end
-    return dest
-end
-
-function Base.copyto!(dest::Memory, di::Integer, src::CircularVector{UInt8}, si::Integer, N::Integer)
-    @boundscheck checkbounds(dest, di + N - 1)
-    @inbounds for i in 0:N-1
-        dest[di+i] = src[si+i]
-    end
-    return dest
-end
-
-function Base.append!(dest::AbstractVector{UInt8}, src::Memory, si::Integer = 1)
-    return append!(dest, @view(unsafe_wrap(Vector{UInt8}, src.ptr, src.size)[si:end]))
 end
 
 """

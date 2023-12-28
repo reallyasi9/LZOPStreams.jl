@@ -32,35 +32,25 @@ The LZO 1X1 algorithm is a Lempel-Ziv lossless compression algorithm defined by:
 
 The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version claims to use only a 4096-byte hash map as additional working memory, but it also requires that a continuous space in memory be available to hold the entire output of the compressed data, the length of which is not knowable _a priori_ but can be larger than the uncompressed data by a factor of roughly 256/255. This implementation needs to keep 49151 bytes of input history in memory in addition to the 4096-byte hash map, but only expands the output as necessary during compression.
 """
-mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
+struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
 
-    input_buffer::CircularVector{UInt8} # 49151-byte history of uncompressed input data
-    read_head::Int # The location of the byte to start reading (equal to the previous write_head before the buffer was refilled)
-    write_head::Int # The location of the next byte in the buffer to write (serves also to mark the end of stream if input is shorter than buffer size)
-    
-    state::MatchingState # Whether or not the compressor is awaiting more input to complete a match
-    match_start_index::Int # If a match is found in the history, this is the starting index
-    output_buffer::Vector{UInt8} # A buffer for matching past the end of a given input chunk (grows as needed)
-    
-    # In the case that a matching run of input ends at anything other than 4 bytes from the end of the input chunk,
-    # the output_buffer will hold the copy command so that it can be updated with the proper number of literal copies
-    # after the input buffer is refilled.
+    input_buffer::CircularBuffer{UInt8} # 49151-byte history of uncompressed input data for history copy command lookups
+    # read_head::Int # The location of the byte to start reading (equal to the previous write_head before the buffer was refilled)
+    # write_head::Int # The location of the next byte in the buffer to write (serves also to mark the end of stream if input is shorter than buffer size)
 
-    previous_copy_command_was_short::Bool # Whether the previous copy command was a short lookback (1 byte command with 2 bits of literal copy + 1 distance byte) or a long lookback (1 byte command + N distance bytes with 2 bits of literal copy at LSB position)
-    previous_literal_length::Int # The previous literal encoding length
+    command_buffer::CircularBuffer{AbstractCommand} # The last command readied by the compression algorithm
+
+    # state::MatchingState # Whether or not the compressor is awaiting more input to complete a match
+    # match_start_index::Int # If a match is found in the history, this is the starting index
+    output_buffer::Vector{UInt8} # A buffer for matching past the end of a given input chunk (grows as needed)
 
     LZO1X1CompressorCodec() = new(HashMap{UInt32,Int}(
         LZO1X1_HASH_BITS,
         LZO1X1_HASH_MAGIC_NUMBER),
-        CircularVector(zeros(UInt8, LZO1X1_MIN_BUFFER_SIZE)), # The circular array needs a small buffer to guarantee the next bytes read can be matched
-        1,
-        1,
-        FIRST_LITERAL,
-        0,
+        CircularBuffer{UInt8}(LZO1X1_MIN_BUFFER_SIZE), # The circular array needs a small buffer to guarantee the next bytes read can be matched
+        CircularBuffer{AbstractCommand}(1), # Only the last command (or nothing) is kept
         Vector{UInt8}(),
-        false,
-        0,
     )
 end
 
@@ -70,14 +60,37 @@ LZOCompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOCompressorCode
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
+    empty!(codec.input_buffer)
+    empty!(codec.command_buffer)
     empty!(codec.output_buffer)
     return
+end
+
+"""
+    state(codec)::MatchingState
+
+Determine the state of the codec from the command in the buffer.
+
+The state of the codec can be one of:
+- `FIRST_LITERAL``: in the middle of recording the first literal copy command from the input (the initial state);
+- `LITERAL`: in the middle of writing a literal copy command to the output; or
+- `HISTORY`: in the middle of writing a history copy command to the output.
+"""
+function state(codec::LZO1X1CompressorCodec)
+    if isempty(codec.command_buffer)
+        return FIRST_LITERAL
+    elseif first(codec.command_buffer) isa LiteralCopyCommand
+        return LITERAL
+    else
+        return HISTORY
+    end
 end
 
 function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memory)
     # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety along with the output buffer
     # plus the appropriate commands to start a long literal or match and end the stream.
-    if codec.state == HISTORY
+    # If in the middle of a history write, then the worst-case scenario is if the history copy command ends the copy and the rest of the input has to be written as a literal.
+    if state(codec) == HISTORY
         # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
         return 1 + (codec.write_head - codec.match_start_index) ÷ 255 + 1 + 2 + 1 + length(input) ÷ 255 + 1 + length(input) + 3
     else

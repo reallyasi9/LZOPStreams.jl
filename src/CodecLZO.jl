@@ -26,14 +26,15 @@ import TranscodingStreams:
     Memory,
     Error
 
-import CircularArrays:
-    CircularVector
+import DataStructures:
+    CircularBuffer
 
 using LZO_jll
 
 include("errors.jl")
 include("memory_management.jl")
 include("hashmap.jl")
+include("modulobuffer.jl")
 include("passthroughfifo.jl")
 include("commands.jl")
 include("lzo1x1_stream_compression.jl")

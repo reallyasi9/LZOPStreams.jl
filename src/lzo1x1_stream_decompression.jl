@@ -191,7 +191,9 @@ function TranscodingStreams.process(codec::LZO1X1DecompressorCodec, input::Memor
                 
                 # execute copy manually, byte by byte, to account for potential looping of the output buffer
                 # which happens when the number of bytes to copy is greater than the lookback distance
-                n_written += self_copy_and_output!(codec.output_buffer, copy_command.lookback, output, n_written, copy_command.copy_length)
+                # TODO: make this output vector a view at the beginning of the loop
+                out_vec = unsafe_wrap(Vector{UInt8}, pointer(output, n_written), length(output) - n_written)
+                n_written += repeatout!(codec.output_buffer, copy_command.lookback, copy_command.copy_length, out_vec)
 
                 codec.remaining_literals = copy_command.post_copy_literals
                 codec.last_literals_copied = codec.remaining_literals
