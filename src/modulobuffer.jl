@@ -16,14 +16,8 @@ the newest element added in the case of `pushfirst!`) to maintain the fixed capa
 struct ModuloBuffer{T} <: AbstractVector{T}
     data::CircularBuffer{T}
 
-    ModuloBuffer{T}(n::Integer) where T = new{T}(CircularBuffer{T}(n))
+    ModuloBuffer{T}(n::Integer) where {T} = new{T}(CircularBuffer{T}(n))
 end
-
-ModuloBuffer(n::Integer) = ModuloBuffer{Any}(n)
-
-ModuloBuffer(iter, n::Integer) = ModuloBuffer{eltype(iter)}(CircularBuffer(iter, n))
-
-ModuloBuffer(iter) = ModuloBuffer{eltype(iter)}(CircularBuffer(iter))
 
 for op in (:size, :length, :pop!, :popfirst!, :eltype, :isempty, :empty!)
     @eval Base.$op(mb::ModuloBuffer) = $op(mb.data)
@@ -58,7 +52,11 @@ end
     return mb.data[_index_checked(mb, i)]
 end
 
-@inline Base.@propagate_inbounds function Base.setindex!(mb::ModuloBuffer, value, i::Integer)
+@inline Base.@propagate_inbounds function Base.setindex!(
+    mb::ModuloBuffer,
+    value,
+    i::Integer,
+)
     mb.data[_index_checked(mb, i)] = value
     return mb
 end
@@ -70,12 +68,12 @@ end
 
 Resize `buffer` to a capacity of `n` elements efficiently.
 
-If `n < capacity(buffer)`, only first `n` elements of `buffer` will be retained.
+If `n < capacity(buffer)`, only the first `n` elements of `buffer` will be retained.
 
 Attempts to avoid allocating new memory by manipulating and resizing the internal vector in
 place.
 """
-function Base.resize!(mb::ModuloBuffer{T}, n::Integer) where T
+function Base.resize!(mb::ModuloBuffer{T}, n::Integer) where {T}
     shift = 1 - mb.data.first
     circshift!(mb.data.buffer, shift)
     mb.data.first = 1
@@ -83,4 +81,22 @@ function Base.resize!(mb::ModuloBuffer{T}, n::Integer) where T
     mb.data.length = min(mb.data.length, n)
     resize!(mb.data.buffer, n)
     return mb
+end
+
+"""
+    resize_front!(buffer::ModuloBuffer, n::Integer)::ModuloBuffer
+
+Resize `buffer` to a capacity of `n` elements efficiently.
+
+If `n < capacity(buffer)`, only the _last_ `n` elements of `buffer` will be retained.
+
+Attempts to avoid allocating new memory by manipulating and resizing the internal vector in
+place.
+"""
+function resize_front!(mb::ModuloBuffer{T}, n::Integer) where {T}
+    if n < mb.data.capacity
+        # push the front forward so that the length(mb.data) - n bytes are trimmed from the front instead of the back.
+        mb.data.first += mod1(mb.data.capacity - n, mb.data.capacity)
+    end
+    return resize!(mb, n)
 end

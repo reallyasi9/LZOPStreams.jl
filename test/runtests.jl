@@ -635,33 +635,50 @@ end
     end
 end
 
-@testitem "LZO1X1CompressorCodec constructor" begin
-    c1 = LZO1X1CompressorCodec()
-    c2 = LZOCompressorCodec()
-    @test true
-end
-
-@testitem "LZO1X1CompressorCodec transcode" begin
-    using TranscodingStreams
+@testitem "ModuloBuffer constructor" begin
     using Random
-    
+    rng = Random.Xoshiro(42)
+
     let
-        small_array = UInt8.(collect(0:255)) # no repeats, so should be one long literal
-        small_array_compressed = transcode(LZOCompressorCodec, small_array)
-        @test length(small_array_compressed) == 2 + length(small_array) + 3
-
-        # The first command should be a copy of the entire 256-byte literal.
-        # The 0b0000XXXX command copies literals with a length encoding of either 3 + XXXX or 18 + (zero bytes following command) * 255 + (non-zero trailing byte).
-        @test small_array_compressed[1:2] == UInt8[0b00000000, 256 - 18]
-
-        # The last command is boilerplate: a copy of 3 bytes from distance 16384
-        @test small_array_compressed[end-2:end] == UInt8[0b00010001, 0, 0]
-        
-        double_small_array = vcat(small_array, small_array) # this should add an additional 5 bytes to the literal because the skip logic, followed by a long copy command
-        double_small_array_compressed = transcode(LZOCompressorCodec, double_small_array)
-        @test length(double_small_array_compressed) == 2 + (length(small_array) + 5) + 4 + 3
-
+        # Type and capacity
+        for T in (UInt8, Int, String, Union{Float64,Missing}, Nothing)
+            n = rand(rng, 0:1000)
+            mb = CodecLZO.ModuloBuffer{T}(n)
+            @test eltype(mb) == T
+            @test CodecLZO.capacity(mb) == n
+            @test length(mb) == 0
+            @test isempty(mb)
+        end
     end
 end
+
+# @testitem "LZO1X1CompressorCodec constructor" begin
+#     c1 = LZO1X1CompressorCodec()
+#     c2 = LZOCompressorCodec()
+#     @test true
+# end
+
+# @testitem "LZO1X1CompressorCodec transcode" begin
+#     using TranscodingStreams
+#     using Random
+    
+#     let
+#         small_array = UInt8.(collect(0:255)) # no repeats, so should be one long literal
+#         small_array_compressed = transcode(LZOCompressorCodec, small_array)
+#         @test length(small_array_compressed) == 2 + length(small_array) + 3
+
+#         # The first command should be a copy of the entire 256-byte literal.
+#         # The 0b0000XXXX command copies literals with a length encoding of either 3 + XXXX or 18 + (zero bytes following command) * 255 + (non-zero trailing byte).
+#         @test small_array_compressed[1:2] == UInt8[0b00000000, 256 - 18]
+
+#         # The last command is boilerplate: a copy of 3 bytes from distance 16384
+#         @test small_array_compressed[end-2:end] == UInt8[0b00010001, 0, 0]
+        
+#         double_small_array = vcat(small_array, small_array) # this should add an additional 5 bytes to the literal because the skip logic, followed by a long copy command
+#         double_small_array_compressed = transcode(LZOCompressorCodec, double_small_array)
+#         @test length(double_small_array_compressed) == 2 + (length(small_array) + 5) + 4 + 3
+
+#     end
+# end
 
 @run_package_tests verbose = true

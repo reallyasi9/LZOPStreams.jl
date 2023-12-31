@@ -1,7 +1,8 @@
 """
     PassThroughFIFO <: AbstractVector{UInt8}
 
-A FIFO (first in, first out) that buffers data pushed into it and pushes out older data to a sink when new data is prepended.
+A FIFO (first in, first out data structure) that buffers data pushed into the front of it
+and, when full, pushes out older data from the back to a sink.
 """
 struct PassThroughFIFO <: AbstractVector{UInt8}
     data::ModuloBuffer{UInt8}
@@ -15,23 +16,49 @@ end
 @inline Base.empty!(p::PassThroughFIFO) = empty!(p.data)
 @inline Base.append!(p::PassThroughFIFO, a) = append!(p.data, a)
 @inline available(p::PassThroughFIFO) = capacity(p) - length(p)
+@inline Base.isempty(p::PassThroughFIFO) = isempty(p.data)
 
+"""
+    flush!(p::PassThroughFIFO, sink::AbstractVector{UInt8})
+
+Copy all the data in `p` to the front of `sink`.
+
+Returns the number of bytes copied, equal to `min(length(p), length(sink))`. If
+`length(sink) >= length(p)`, `isempty(p) == true` after the flush, else
+`length(p)` will be equal to the number of bytes that could not be pushed to `sink`.
+"""
 function flush!(p::PassThroughFIFO, sink::AbstractVector{UInt8})
     n = min(length(p), length(sink))
     @inbounds sink[1:n] = p[1:n]
+    if n == length(p)
+        empty!(p)
+    else
+        resize_front!(p.data, length(p)-n)
+    end
     return n
 end
 
 """
-    pushout!(p::PassThroughFIFO, source, source_start, sink, sink_start)
+    pushout!(p::PassThroughFIFO, source, sink::AbstractVector{UInt8})
 
 Push as much of `source` into the FIFO as it can hold, pushing out stored data to `sink`.
 
-Until `p` is full, elements from `source` will be added to the FIFO and no elements will be pushed out to `sink`. Once `p` is full, elements of `source` up to `capacity(p)` will be added to the FIFO and the older elements will be pushed to `sink`.
+The argument `source` can be an `AbstractVector{UInt8}` or a single `UInt8` value.
 
-Returns a tuple of the number of elements read from `source` and the number of elements written to `sink`.
+Until `p` is full, elements from `source` will be added to the FIFO and no elements will be
+pushed out to `sink`. Once `p` is full, elements of `source` up to `capacity(p)` will be
+added to the FIFO and the older elements will be pushed to `sink`.
+
+Returns a tuple of the number of elements read from `source` and the number of elements
+written to `sink`.
+
+See [`repeatout!`](@ref).
 """
-function pushout!(p::PassThroughFIFO, source::AbstractVector{UInt8}, sink::AbstractVector{UInt8})
+function pushout!(
+    p::PassThroughFIFO,
+    source::AbstractVector{UInt8},
+    sink::AbstractVector{UInt8},
+)
     a = available(p)
 
     if a > 0
@@ -66,7 +93,25 @@ function pushout!(p::PassThroughFIFO, value::UInt8, sink::AbstractVector{UInt8})
     return 1
 end
 
-function repeatout!(p::PassThroughFIFO, lookback::Integer, n::Integer, sink::AbstractVector{UInt8})
+"""
+    repeatout!(p::PassThroughFIFO, lookback::Integer, n::Integer, sink::AbstractVector{UInt8})
+
+Append `n` values starting from `lookback` bytes from the end of `p` to the front of `p`.
+
+Once `p` is full, any bytes that are appended to the front of `p` will cause bytes from the
+back to be expelled into the front of `sink`.
+
+This method works even if `n > lookback`, in which case the bytes that were appended to the
+    front of `p` first will be repeated.
+
+Returns the number of bytes expelled from `p` into `sink`.
+"""
+function repeatout!(
+    p::PassThroughFIFO,
+    lookback::Integer,
+    n::Integer,
+    sink::AbstractVector{UInt8},
+)
     n_expelled = 0
     sl = length(sink)
     while n > 0 && n_expelled < sl
