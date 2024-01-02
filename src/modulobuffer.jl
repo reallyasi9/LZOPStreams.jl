@@ -1,30 +1,122 @@
 
 """
     ModuloBuffer{T}(n::Integer)
-    ModuloBuffer(v::AbstractVector{T}[, n::Integer])
-    ModuloBuffer(iter[, n::Integer])
+    ModuloBuffer(iter)
 
-An `AbstractVector{T}` of fixed capacity `n` with periodic boundary conditions.
+An `AbstractVector{T}` of fixed capacity `n` with periodic boundary conditions o nthe index.
 
-If not given, `n` defaults to the length of the `Vector` or iterator passed to the
-constructor. If `n < length(v)`, only the first `n` elements will be copied to the buffer.
+The first version of the constructor will create an empty buffer with a capacity of `n`. The
+second version will copy all elements of the iterable object `iter` into a new buffer with a
+capacity of `length(iter)` and element type `eltype(iter)`.
 
 If a new element added (either with `push!`, `pushfirst!`, or `append!`) would increase the
-size of the buffer past the capacity `n`, the oldest element added will be overwritten (or
-the newest element added in the case of `pushfirst!`) to maintain the fixed capacity.
+size of the buffer past the capacity, the oldest element added will be overwritten (or the
+newest element added in the case of `pushfirst!`) to maintain the fixed capacity.
+
+If the buffer is not at capacity, then attempts to index into unfilled elements of the
+buffer will result in a `BoundsError`.
 """
-struct ModuloBuffer{T} <: AbstractVector{T}
-    data::CircularBuffer{T}
+mutable struct ModuloBuffer{T} <: AbstractVector{T}
+    data::Vector{T}
+    capacity::Int
+    length::Int
+    first::Int # the first valid element
 
-    ModuloBuffer{T}(n::Integer) where {T} = new{T}(CircularBuffer{T}(n))
+    ModuloBuffer{T}(n::Integer) where {T} = new{T}(Vector{T}(undef, n), n, 0, 0)
+    ModuloBuffer(v) = new{eltype(v)}(Vector{eltype(v)}(v), length(v), length(v), 1)
 end
 
-for op in (:size, :length, :pop!, :popfirst!, :eltype, :isempty, :empty!)
-    @eval Base.$op(mb::ModuloBuffer) = $op(mb.data)
+@inline Base.size(mb::ModuloBuffer) = (mb.length,)
+@inline Base.axes(mb::ModuloBuffer) = (mb.first:mb.first+mb.length-1,)
+@inline Base.eltype(::ModuloBuffer{T}) where T = T
+@inline Base.isempty(mb::ModuloBuffer) = mb.length == 0
+@inline Base.checkbounds(::Type{Bool}, mb::ModuloBuffer, i) = true
+@inline Base.firstindex(mb::ModuloBuffer) = mb.first
+@inline Base.lastindex(mb::ModuloBuffer) = mb.first + mb.length - 1
+@inline isfull(mb::ModuloBuffer) = mb.length == mb.capacity
+
+Base.@propagate_inbounds function _index(mb::ModuloBuffer, i::Integer)
+    idx = mod1(mb.first + i - 1, mb.capacity)
+    # boundscheck only if the length is less than the capacity
+    @boundscheck idx > mb.length && throw(BoundsError(mb, i))
+    return idx
 end
 
-for op in (:push!, :pushfirst!, :append!, :resize!)
-    @eval Base.$op(mb::ModuloBuffer, value) = $op(mb.data, value)
+Base.@propagate_inbounds function Base.getindex(mb::ModuloBuffer, i::Integer)
+    return mb.data[_index(mb, i)]
+end
+
+Base.@propagate_inbounds function Base.setindex!(mb::ModuloBuffer, value, i::Integer)
+    mb.data[_index(mb, i)] = value
+    return mb
+end
+
+function Base.push!(mb::ModuloBuffer, value)
+    if mb.capacity == 0
+        throw(ArgumentError("buffer capacity must be non-zero"))
+    end
+    if isempty(mb)
+        mb.first = mb.length = 1
+        @inbounds mb.data[1] = value
+    else
+        @inbounds mb.data[_index(mb, mb.length + 1)] = value
+        mb.first += isfull(mb) ? 1 : 0
+        mb.length += isfull(mb) ? 0 : 1
+    end
+    return mb
+end
+
+function Base.pushfirst!(mb::ModuloBuffer, value)
+    if mb.capacity == 0
+        throw(ArgumentError("buffer capacity must be non-zero"))
+    end
+    if isempty(mb)
+        mb.first = mb.length = 1
+        @inbounds mb.data[1] = value
+    else
+        @inbounds mb.data[_index(mb, 0)] = value
+        mb.first -= 1
+        mb.length += isfull(mb) ? 0 : 1
+    end
+    return mb
+end
+
+function Base.pop!(mb::ModuloBuffer)
+    if isempty(mb)
+        throw(ArgumentError("buffer must be non-empty"))
+    end
+    @inbounds value = mb.data[_index(mb, mb.length)]
+    mb.length -= 1
+    return value
+end
+
+function Base.popfirst!(mb::ModuloBuffer)
+    if isempty(mb)
+        throw(ArgumentError("buffer must be non-empty"))
+    end
+    @inbounds value = mb.data[_index(mb, mb.first)]
+    mb.first += 1
+    mb.length -= 1
+    return value
+end
+
+function Base.append!(mb::ModuloBuffer, items)
+    for value in last(items, mb.capacity)
+        push!(mb, value)
+    end
+    return mb
+end
+
+function Base.prepend!(mb::ModuloBuffer, items)
+    for value in last(reverse(items), mb.capacity)
+        pushfirst!(mb, value)
+    end
+    return mb
+end
+
+function Base.empty!(mb::ModuloBuffer)
+   mb.first = mb.length = 0
+   return mb 
 end
 
 """
@@ -33,35 +125,8 @@ end
 Return the maximum number of elements `buffer` can contain.
 """
 @inline function capacity(mb::ModuloBuffer)
-    return mb.data.capacity
+    return mb.capacity
 end
-
-@inline function _index(mb::ModuloBuffer, i::Integer)
-    return mod1(mb.data.first + i - 1, mb.data.capacity)
-end
-
-Base.@propagate_inbounds function _index_checked(mb::ModuloBuffer, i::Integer)
-    idx = _index(mb, i)
-    @boundscheck if idx > mb.data.length
-        throw(BoundsError(mb, i))
-    end
-    return idx
-end
-
-@inline Base.@propagate_inbounds function Base.getindex(mb::ModuloBuffer, i::Integer)
-    return mb.data[_index_checked(mb, i)]
-end
-
-@inline Base.@propagate_inbounds function Base.setindex!(
-    mb::ModuloBuffer,
-    value,
-    i::Integer,
-)
-    mb.data[_index_checked(mb, i)] = value
-    return mb
-end
-
-@inline Base.checkbounds(::Type{Bool}, mb::ModuloBuffer, i) = true
 
 """
     resize!(buffer::ModuloBuffer, n::Integer)::ModuloBuffer
@@ -74,12 +139,12 @@ Attempts to avoid allocating new memory by manipulating and resizing the interna
 place.
 """
 function Base.resize!(mb::ModuloBuffer{T}, n::Integer) where {T}
-    shift = 1 - mb.data.first
-    circshift!(mb.data.buffer, shift)
-    mb.data.first = 1
-    mb.data.capacity = n
-    mb.data.length = min(mb.data.length, n)
-    resize!(mb.data.buffer, n)
+    shift = 1 - mb.first
+    circshift!(mb.data, shift)
+    mb.first = 1
+    mb.capacity = n
+    mb.length = min(mb.length, n)
+    resize!(mb.data, n)
     return mb
 end
 
@@ -94,9 +159,36 @@ Attempts to avoid allocating new memory by manipulating and resizing the interna
 place.
 """
 function resize_front!(mb::ModuloBuffer{T}, n::Integer) where {T}
-    if n < mb.data.capacity
+    if n < mb.capacity
         # push the front forward so that the length(mb.data) - n bytes are trimmed from the front instead of the back.
-        mb.data.first += mod1(mb.data.capacity - n, mb.data.capacity)
+        rot = mod1(mb.capacity - n, mb.capacity)
+        mb.first += rot
     end
     return resize!(mb, n)
+end
+
+function Base.show_vector(io::IO, mb::ModuloBuffer)
+    if isfull(mb)
+        larrow = "⇠"
+        rarrow = "⇢"
+    else
+        larrow = rarrow = '…'
+    end
+    Base.show_vector(io, mb, "[$larrow", "$rarrow] ($(mb.length)/$(mb.capacity))")
+    return nothing
+end
+
+function Base.summary(io::IO, mb::ModuloBuffer)
+    print(io, "$(mb.length)/$(mb.capacity)-element $(typeof(mb))")
+    return nothing
+end
+
+function Base.print_array(io::IO, mb::ModuloBuffer)
+    if isfull(mb)
+        larrow = "⇠"
+        rarrow = "⇢"
+    else
+        larrow = rarrow = "…"
+    end
+    Base.print_matrix(io, mb, larrow, "  ", rarrow)
 end

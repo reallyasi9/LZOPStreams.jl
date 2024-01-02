@@ -635,11 +635,12 @@ end
     end
 end
 
-@testitem "ModuloBuffer constructor" begin
+@testitem "ModuloBuffer" begin
     using Random
     # TODO fix this when LTS is bumped past 1.7
     rng = Random.MersenneTwister(42)
 
+    # constructor
     let
         # Type and capacity
         for T in (UInt8, Int, String, Union{Float64,Missing}, Nothing)
@@ -651,7 +652,63 @@ end
             @test isempty(mb)
         end
     end
+
+    let
+        # size, length, and capacity with push! and pop!
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
+        @test CodecLZO.capacity(mb) == 10
+        @test size(mb) == (0,)
+        @test length(mb) == 0
+
+        @test typeof(push!(mb, 1)) == typeof(mb)
+        @test CodecLZO.capacity(mb) == 10
+        @test size(mb) == (1,)
+        @test length(mb) == 1
+
+        @test pop!(mb) == 1
+        @test CodecLZO.capacity(mb) == 10
+        @test size(mb) == (0,)
+        @test length(mb) == 0
+
+        @test_throws ArgumentError pop!(mb)
+
+        # pushfirst! and popfirst! behavior
+        @test typeof(pushfirst!(mb, 1)) == typeof(mb)
+        pushfirst!(mb, 2)
+        pushfirst!(mb, 3)
+        @test length(mb) == 3
+        @test CodecLZO.capacity(mb) == 10
+        @test popfirst!(mb) == 3
+        @test length(mb) == 2
+        @test CodecLZO.capacity(mb) == 10
+        @test pop!(mb) == 1
+        @test popfirst!(mb) == 2
+
+        @test_throws ArgumentError pop!(mb)
+
+        # getindex and setindex! behavior
+        @test_throws BoundsError mb[1] = 1
+
+        push!(mb, 1)
+        @test mb[1] == 1
+        push!(mb, 2)
+        @test mb[2] == 2
+        @test typeof(mb[1] = 3) == typeof(mb)
+        @test mb[1] == 3
+        @test CodecLZO.capacity(mb) == 10
+        popfirst!(mb)
+        @test mb[1] == 2
+
+        # empty! and isempty behavior
+        @test length(mb) > 0
+        @test !isempty(mb)
+        @test typeof(empty!(mb)) == typeof(mb)
+        @test length(mb) == 0
+        @test isempty(mb)
+        @test CodecLZO.capacity(mb) == 10
+    end
 end
+
 
 # @testitem "LZO1X1CompressorCodec constructor" begin
 #     c1 = LZO1X1CompressorCodec()
