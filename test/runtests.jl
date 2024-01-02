@@ -637,7 +637,8 @@ end
 
 @testitem "ModuloBuffer constructor" begin
     using Random
-    rng = Random.Xoshiro(42)
+    # TODO fix this when LTS is bumped past 1.7
+    rng = Random.MersenneTwister(42)
 
     let
         # Type and capacity
