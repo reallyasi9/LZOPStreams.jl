@@ -27,18 +27,15 @@ mutable struct ModuloBuffer{T} <: AbstractVector{T}
 end
 
 @inline Base.size(mb::ModuloBuffer) = (mb.length,)
-@inline Base.axes(mb::ModuloBuffer) = (mb.first:mb.first+mb.length-1,)
 @inline Base.eltype(::ModuloBuffer{T}) where T = T
 @inline Base.isempty(mb::ModuloBuffer) = mb.length == 0
 @inline Base.checkbounds(::Type{Bool}, mb::ModuloBuffer, i) = true
-@inline Base.firstindex(mb::ModuloBuffer) = mb.first
-@inline Base.lastindex(mb::ModuloBuffer) = mb.first + mb.length - 1
+@inline Base.IndexStyle(::Type{<:ModuloBuffer}) = IndexLinear()
 @inline isfull(mb::ModuloBuffer) = mb.length == mb.capacity
 
 Base.@propagate_inbounds function _index(mb::ModuloBuffer, i::Integer)
     idx = mod1(mb.first + i - 1, mb.capacity)
-    # boundscheck only if the length is less than the capacity
-    @boundscheck idx > mb.length && throw(BoundsError(mb, i))
+    @boundscheck !isfull(mb) && mod1(i, mb.capacity) > mb.length && throw(BoundsError(mb, i))
     return idx
 end
 
@@ -94,7 +91,7 @@ function Base.popfirst!(mb::ModuloBuffer)
     if isempty(mb)
         throw(ArgumentError("buffer must be non-empty"))
     end
-    @inbounds value = mb.data[_index(mb, mb.first)]
+    @inbounds value = mb.data[_index(mb, 1)]
     mb.first += 1
     mb.length -= 1
     return value
@@ -168,13 +165,17 @@ function resize_front!(mb::ModuloBuffer{T}, n::Integer) where {T}
 end
 
 function Base.show_vector(io::IO, mb::ModuloBuffer)
-    if isfull(mb)
-        larrow = "⇠"
-        rarrow = "⇢"
+    if isempty(mb)
+        larrow = "("
+        rarrow = ")"
+    elseif isfull(mb)
+        larrow = "(⇠"
+        rarrow = "⇢)"
     else
-        larrow = rarrow = '…'
+        larrow = "(…"
+        rarrow = "…)"
     end
-    Base.show_vector(io, mb, "[$larrow", "$rarrow] ($(mb.length)/$(mb.capacity))")
+    Base.show_vector(io, mb, larrow, rarrow)
     return nothing
 end
 

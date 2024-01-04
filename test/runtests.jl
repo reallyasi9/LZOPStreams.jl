@@ -673,9 +673,7 @@ end
         @test_throws ArgumentError pop!(mb)
 
         # pushfirst! and popfirst! behavior
-        @test typeof(pushfirst!(mb, 1)) == typeof(mb)
-        pushfirst!(mb, 2)
-        pushfirst!(mb, 3)
+        @test typeof(pushfirst!(mb, 3, 2, 1)) == typeof(mb)
         @test length(mb) == 3
         @test CodecLZO.capacity(mb) == 10
         @test popfirst!(mb) == 3
@@ -684,7 +682,7 @@ end
         @test pop!(mb) == 1
         @test popfirst!(mb) == 2
 
-        @test_throws ArgumentError pop!(mb)
+        @test_throws ArgumentError popfirst!(mb)
 
         # getindex and setindex! behavior
         @test_throws BoundsError mb[1] = 1
@@ -693,7 +691,7 @@ end
         @test mb[1] == 1
         push!(mb, 2)
         @test mb[2] == 2
-        @test typeof(mb[1] = 3) == typeof(mb)
+        mb[1] = 3
         @test mb[1] == 3
         @test CodecLZO.capacity(mb) == 10
         popfirst!(mb)
@@ -706,6 +704,84 @@ end
         @test length(mb) == 0
         @test isempty(mb)
         @test CodecLZO.capacity(mb) == 10
+
+        # append! and prepend! behavior
+        @test typeof(append!(mb, [1, 2, 3])) == typeof(mb)
+        @test length(mb) == 3
+        @test CodecLZO.capacity(mb) == 10
+        @test mb[1:3] == [1, 2, 3]
+        @test typeof(append!(mb, [4, 5], [6])) == typeof(mb)
+        @test length(mb) == 6
+        @test mb[1:6] == [1, 2, 3, 4, 5, 6]
+        
+        empty!(mb)
+        @test typeof(prepend!(mb, [1, 2, 3])) == typeof(mb)
+        @test length(mb) == 3
+        @test CodecLZO.capacity(mb) == 10
+        @test mb[1:3] == [1, 2, 3]
+        @test typeof(prepend!(mb, [4, 5], [6])) == typeof(mb)
+        @test length(mb) == 6
+        @test mb[1:6] == [4, 5, 6, 1, 2, 3]
+
+        # modulo indexing
+        empty!(mb)
+        append!(mb, [1, 2, 3])
+        @test mb[1] == mb[CodecLZO.capacity(mb) + 1] == 1
+        @test mb[2:3] == mb[12:13] == mb[-8:-7] == [2, 3]
+        @test_throws BoundsError mb[4]
+        @test_throws BoundsError mb[0]
+        @test_throws BoundsError mb[14]
+
+        # periodic boundary conditions
+        append!(mb, 4:10)
+        @test length(mb) == CodecLZO.capacity(mb) == 10
+        @test mb[1] == mb[11] == mb[-9] == 1
+        @test mb[10] == mb[20] == mb[0] == 10
+        push!(mb, 11)
+        @test length(mb) == 10
+        @test mb[1] == mb[11] == mb[-9] == 2
+        @test mb[10] == mb[20] == mb[0] == 11
+        pushfirst!(mb, 1)
+        @test mb[1] == mb[11] == mb[-9] == 1
+        @test mb[10] == mb[20] == mb[0] == 10
+        push!(mb, 11)
+        @test popfirst!(mb) == 2
+        @test length(mb) == 9
+
+        # oversize append! and prepend!
+        empty!(mb)
+        append!(mb, 1:20)
+        @test mb[1:10] == 11:20
+        prepend!(mb, 1:20)
+        @test mb[1:10] == 1:10
+
+        # resize! and resize_front!
+        @test typeof(resize!(mb, 5)) == typeof(mb)
+        @test length(mb) == CodecLZO.capacity(mb) == 5
+        @test mb[1:5] == 1:5
+        resize!(mb, 10)
+        @test length(mb) == 5
+        @test CodecLZO.capacity(mb) == 10
+        @test mb[1:5] == 1:5
+
+        append!(mb, 6:10)
+        @test typeof(CodecLZO.resize_front!(mb, 5)) == typeof(mb)
+        @test length(mb) == CodecLZO.capacity(mb) == 5
+        @test mb[1:5] == 6:10
+        CodecLZO.resize_front!(mb, 10)
+        @test length(mb) == 5
+        @test CodecLZO.capacity(mb) == 10
+        @test mb[1:5] == 6:10
+
+        # Nonstandard indexing
+        @test firstindex(mb) == 1
+        @test lastindex(mb) == 5
+        prepend!(mb, 1:5)
+        @test lastindex(mb) == 10
+        @test mb[1] == mb[begin]
+        @test mb[10] == mb[end]
+        @test mb[:] == mb[begin:end] == mb[1:10] == mb[-9:0] == mb[11:20] == 1:10
+        @test mb[1:20] == repeat(1:10, 2)
     end
 end
 
