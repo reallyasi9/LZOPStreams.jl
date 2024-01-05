@@ -1,8 +1,4 @@
 using CodecLZO
-
-using LZO_jll
-using Random
-using TranscodingStreams
 using TestItemRunner
 
 @testitem "HashMap" begin
@@ -635,7 +631,7 @@ end
     end
 end
 
-@testitem "ModuloBuffer" begin
+@testitem "ModuloBuffer constructor" begin
     using Random
     # TODO fix this when LTS is bumped past 1.7
     rng = Random.MersenneTwister(42)
@@ -651,8 +647,24 @@ end
             @test length(mb) == 0
             @test isempty(mb)
         end
-    end
 
+        # limiting case
+        mb = CodecLZO.ModuloBuffer{Nothing}(0)
+        @test eltype(mb) == Nothing
+        @test CodecLZO.capacity(mb) == 0
+        @test length(mb) == 0
+        @test isempty(mb)
+
+        # Iterable
+        mb = CodecLZO.ModuloBuffer(rand(rng, UInt8, 10))
+        @test eltype(mb) == UInt8
+        @test CodecLZO.capacity(mb) == 10
+        @test length(mb) == 10
+        @test CodecLZO.isfull(mb)
+    end
+end
+
+@testitem "ModuloBuffer pushing and popping" begin
     let
         # size, length, and capacity with push! and pop!
         mb = CodecLZO.ModuloBuffer{UInt8}(10)
@@ -683,6 +695,12 @@ end
         @test popfirst!(mb) == 2
 
         @test_throws ArgumentError popfirst!(mb)
+    end
+end
+
+@testitem "ModuloBuffer setindex and getindex" begin
+    let
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
 
         # getindex and setindex! behavior
         @test_throws BoundsError mb[1] = 1
@@ -696,14 +714,28 @@ end
         @test CodecLZO.capacity(mb) == 10
         popfirst!(mb)
         @test mb[1] == 2
+    end
+end
+
+@testitem "ModuloBuffer empty" begin
+    let
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
 
         # empty! and isempty behavior
+        @test isempty(mb)
+        push!(mb, 1)
         @test length(mb) > 0
         @test !isempty(mb)
         @test typeof(empty!(mb)) == typeof(mb)
         @test length(mb) == 0
         @test isempty(mb)
         @test CodecLZO.capacity(mb) == 10
+    end
+end
+
+@testitem "ModuloBuffer append and prepend" begin
+    let
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
 
         # append! and prepend! behavior
         @test typeof(append!(mb, [1, 2, 3])) == typeof(mb)
@@ -722,9 +754,14 @@ end
         @test typeof(prepend!(mb, [4, 5], [6])) == typeof(mb)
         @test length(mb) == 6
         @test mb[1:6] == [4, 5, 6, 1, 2, 3]
+    end
+end
+
+@testitem "ModuloBuffer modulo indexing and periodic boundary conditions" begin
+    let 
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
 
         # modulo indexing
-        empty!(mb)
         append!(mb, [1, 2, 3])
         @test mb[1] == mb[CodecLZO.capacity(mb) + 1] == 1
         @test mb[2:3] == mb[12:13] == mb[-8:-7] == [2, 3]
@@ -747,13 +784,25 @@ end
         push!(mb, 11)
         @test popfirst!(mb) == 2
         @test length(mb) == 9
+    end
+end
+
+@testitem "ModuloBuffer oversized append and prepend" begin
+    let
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
 
         # oversize append! and prepend!
-        empty!(mb)
         append!(mb, 1:20)
         @test mb[1:10] == 11:20
         prepend!(mb, 1:20)
         @test mb[1:10] == 1:10
+    end
+end
+
+@testitem "ModuloBuffer resizing" begin
+    let
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
+        append!(mb, 1:10)
 
         # resize! and resize_front!
         @test typeof(resize!(mb, 5)) == typeof(mb)
@@ -772,6 +821,13 @@ end
         @test length(mb) == 5
         @test CodecLZO.capacity(mb) == 10
         @test mb[1:5] == 6:10
+    end
+end
+
+@testitem "ModuloBuffer noninteger indexing" begin
+    let
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
+        append!(mb, 6:10)
 
         # Nonstandard indexing
         @test firstindex(mb) == 1

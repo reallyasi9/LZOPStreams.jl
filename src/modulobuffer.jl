@@ -33,8 +33,12 @@ end
 @inline Base.IndexStyle(::Type{<:ModuloBuffer}) = IndexLinear()
 @inline isfull(mb::ModuloBuffer) = mb.length == mb.capacity
 
-Base.@propagate_inbounds function _index(mb::ModuloBuffer, i::Integer)
-    idx = mod1(mb.first + i - 1, mb.capacity)
+@inline function _unsafe_index(mb::ModuloBuffer, i::Integer)
+    return mod1(mb.first + i - 1, mb.capacity)
+end
+
+function _index(mb::ModuloBuffer, i::Integer)
+    idx = _unsafe_index(mb, i)
     @boundscheck !isfull(mb) && mod1(i, mb.capacity) > mb.length && throw(BoundsError(mb, i))
     return idx
 end
@@ -56,7 +60,7 @@ function Base.push!(mb::ModuloBuffer, value)
         mb.first = mb.length = 1
         @inbounds mb.data[1] = value
     else
-        @inbounds mb.data[_index(mb, mb.length + 1)] = value
+        @inbounds mb.data[_unsafe_index(mb, mb.length + 1)] = value
         mb.first += isfull(mb) ? 1 : 0
         mb.length += isfull(mb) ? 0 : 1
     end
@@ -71,7 +75,7 @@ function Base.pushfirst!(mb::ModuloBuffer, value)
         mb.first = mb.length = 1
         @inbounds mb.data[1] = value
     else
-        @inbounds mb.data[_index(mb, 0)] = value
+        @inbounds mb.data[_unsafe_index(mb, 0)] = value
         mb.first -= 1
         mb.length += isfull(mb) ? 0 : 1
     end
@@ -82,7 +86,7 @@ function Base.pop!(mb::ModuloBuffer)
     if isempty(mb)
         throw(ArgumentError("buffer must be non-empty"))
     end
-    @inbounds value = mb.data[_index(mb, mb.length)]
+    @inbounds value = mb.data[_unsafe_index(mb, mb.length)]
     mb.length -= 1
     return value
 end
@@ -91,7 +95,7 @@ function Base.popfirst!(mb::ModuloBuffer)
     if isempty(mb)
         throw(ArgumentError("buffer must be non-empty"))
     end
-    @inbounds value = mb.data[_index(mb, 1)]
+    @inbounds value = mb.data[_unsafe_index(mb, 1)]
     mb.first += 1
     mb.length -= 1
     return value
