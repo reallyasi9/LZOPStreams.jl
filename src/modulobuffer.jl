@@ -115,6 +115,21 @@ function Base.prepend!(mb::ModuloBuffer, items)
     return mb
 end
 
+# copyto! is a little strange because it ignores the buffer length
+function Base.copyto!(mb::ModuloBuffer, i::Integer, src::AbstractArray, j::Integer, n::Integer)
+    n == 0 && return mb
+    i = mod1(i, mb.capacity)
+    shift = 2 - mb.first - i
+    _circshift!(mb.data, shift)
+    mb.first = 1
+    nmod = min(n, mb.capacity)
+    # instead of writing j:j+n-1, write j+n-nmod:j+n-1
+    copyto!(mb.data, 1, src, j+n-nmod, nmod)
+    mb.length = max(mb.length, nmod)
+    mb.first -= i - 1
+    return mb
+end
+
 function Base.empty!(mb::ModuloBuffer)
    mb.first = mb.length = 0
    return mb 
@@ -146,7 +161,7 @@ end
 """
     resize!(buffer::ModuloBuffer, n::Integer)::ModuloBuffer
 
-Resize `buffer` to a capacity of `n` elements efficiently.
+Resize `buffer` to a capacity of `n` elements by adjusting the location of the back of the buffer.
 
 If `n < capacity(buffer)`, only the first `n` elements of `buffer` will be retained.
 
@@ -166,14 +181,14 @@ end
 """
     resize_front!(buffer::ModuloBuffer, n::Integer)::ModuloBuffer
 
-Resize `buffer` to a capacity of `n` elements efficiently.
+Resize `buffer` to a capacity of `n` elements by adjusting the location of the front of the buffer.
 
 If `n < capacity(buffer)`, only the _last_ `n` elements of `buffer` will be retained.
 
 Attempts to avoid allocating new memory by manipulating and resizing the internal vector in
 place.
 """
-function resize_front!(mb::ModuloBuffer{T}, n::Integer) where {T}
+function resize_front!(mb::ModuloBuffer, n::Integer)
     if n < mb.capacity
         # push the front forward so that the length(mb.data) - n bytes are trimmed from the front instead of the back.
         rot = mod1(mb.capacity - n, mb.capacity)
@@ -181,6 +196,57 @@ function resize_front!(mb::ModuloBuffer{T}, n::Integer) where {T}
     end
     return resize!(mb, n)
 end
+
+"""
+    shift_copy!(buffer::ModuloBuffer, source, i, sink, j, [n])::Tuple{Int,Int}
+
+Copy `n` elements `source` starting at `i` to the back of `buffer`, evicting elements from the front of `buffer` to `sink` starting at `j`.
+
+`source` must be a valid source for the `copyto!` method, and `sink` must be a valid
+destination.
+
+If not specified, `n` defaults to the minimum of the capacity of `buffer`, the number of
+elements that can be copied from `source`, and the amount of free space left in `sink`.
+
+If `n <= capacity(buffer) - length(buffer)`, then all `n` elements will be copied into the
+available space in `buffer` and no elements will be evicted from the front of `buffer` into
+`sink`.
+
+Returns a tuple of the number of elements copied from `source` and the number of elements
+evicted from `buffer` and copied to `sink`.
+"""
+function shift_copy!(mb::ModuloBuffer, source::AbstractVector, i::Integer, sink::AbstractVector, j::Integer, n::Integer)
+    n == 0 && return (0,0)
+    lost = max(length(mb) + n - capacity(mb), 0)
+    # we can cheat here because we do know how source is indexed
+    to_evict = lost
+    if to_evict > 0
+        eviction = min(length(mb), to_evict)
+        copyto!(sink, j, mb, 1, eviction)
+        to_evict -= eviction
+        j += eviction
+        mb.first += eviction
+    end
+    copyto!(sink, j, source, i, to_evict)
+    append!(mb, source[i:i+n-1])
+    return (n,lost)
+end
+
+function shift_copy!(mb::ModuloBuffer, source::AbstractVector, i::Integer, sink::AbstractVector, j::Integer)
+    max_source = lastindex(source)-i+1
+    n = min(capacity(mb), max_source)
+    remainder = capacity(mb) - length(mb)
+    loss = n - remainder
+    if loss > 0
+        max_loss = lastindex(sink)-j+1
+        loss = min(loss, max_loss)
+        n = remainder + loss
+    end
+    return shift_copy!(mb, source, i, sink, j, n)
+end
+
+
+# custom pretty-printing functionality follows
 
 function Base.show_vector(io::IO, mb::ModuloBuffer)
     if isempty(mb)
