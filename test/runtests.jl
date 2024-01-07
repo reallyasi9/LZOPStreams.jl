@@ -841,6 +841,40 @@ end
     end
 end
 
+@testitem "ModuloBuffer shift_copy!" begin
+    let 
+        mb = CodecLZO.ModuloBuffer{UInt8}(10)
+        sink = UInt8[]
+        source = Vector{UInt8}(1:100)
+
+        # shift nothing
+        @test CodecLZO.shift_copy!(mb, source, 1, sink, 1, 0) == (0,0)
+        @test length(mb) == 0
+        @test length(sink) == 0
+
+        # shift less than capacity, no push to sink
+        @test CodecLZO.shift_copy!(mb, source, 1, sink, 1, 5) == (5,0)
+        @test length(mb) == 5
+        @test length(sink) == 0
+        @test mb[:] == 1:5
+
+        # shift more than remaining, sink blocks
+        @test CodecLZO.shift_copy!(mb, source, 6, sink, 1) == (5,0)
+        @test length(mb) == 10
+        @test length(sink) == 0
+        @test mb[:] == 1:10
+        @test CodecLZO.shift_copy!(mb, source, 11, sink, 1) == (0,0)
+
+        # shift more than remaining, sink takes partial
+        resize!(mb, 15)
+        resize!(sink, 2)
+        @test CodecLZO.shift_copy!(mb, source, 11, sink, 1) == (7,2)
+        @test mb[:] == 3:17
+        @test sink == 1:2
+
+    end
+end
+
 
 # @testitem "LZO1X1CompressorCodec constructor" begin
 #     c1 = LZO1X1CompressorCodec()

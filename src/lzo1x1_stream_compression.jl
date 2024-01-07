@@ -1,10 +1,10 @@
 const LZO1X1_LAST_LITERAL_SIZE = 3  # the number of bytes in the last literal
 const LZO1X1_LAST_LITERAL_MAX_SIZE = 20 # do not try to match in history if the remaining literal is this size or less
 const LZO1X1_MIN_MATCH = sizeof(UInt32)  # the smallest number of bytes to consider in a dictionary lookup
-const LZO1X1_MAX_INPUT_SIZE = 0x7e00_0000 % Int  # 2133929216 bytes
-const LZO1X1_ML_BITS = 4  # 4 bits
-const LZO1X1_RUN_BITS = 8 - LZO1X1_ML_BITS  # 4 bits
-const LZO1X1_RUN_MASK = (1 << LZO1X1_RUN_BITS) - 1 # 0b00001111
+const LZO1X1_MAX_INPUT_SIZE = 0x7e00_0000 % Int  # 2133929216 bytes, seemingly arbitrary?
+const LZO1X1_LITERAL_LENGTH_BITS = 4  # The number of bits in a literal command before resorting to run encoding
+const LZO1X1_LONG_COPY_LENGTH_BITS = 3  # The number of bits in a long-distance (16K to 48K) history copy command before resorting to run encoding
+const LZO1X1_SHORT_COPY_LENGTH_BITS = 5  # The number of bits in a short-distance (under 16K) history copy command before resorting to run encoding
 
 const LZO1X1_MAX_DISTANCE = (0b11000000_00000000 - 1) % Int  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
 const LZO1X1_SKIP_TRIGGER = 5  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
@@ -34,21 +34,14 @@ The C implementation of LZO defined by liblzo2 requires that all compressable in
 """
 struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
-
-    input_buffer::CircularBuffer{UInt8} # 49151-byte history of uncompressed input data for history copy command lookups
-    # read_head::Int # The location of the byte to start reading (equal to the previous write_head before the buffer was refilled)
-    # write_head::Int # The location of the next byte in the buffer to write (serves also to mark the end of stream if input is shorter than buffer size)
-
+    input_buffer::ModuloBuffer{UInt8} # 49151-byte history of uncompressed input data for history copy command lookups
     command_buffer::CircularBuffer{AbstractCommand} # The last command readied by the compression algorithm
-
-    # state::MatchingState # Whether or not the compressor is awaiting more input to complete a match
-    # match_start_index::Int # If a match is found in the history, this is the starting index
     output_buffer::Vector{UInt8} # A buffer for matching past the end of a given input chunk (grows as needed)
 
     LZO1X1CompressorCodec() = new(HashMap{UInt32,Int}(
         LZO1X1_HASH_BITS,
         LZO1X1_HASH_MAGIC_NUMBER),
-        CircularBuffer{UInt8}(LZO1X1_MIN_BUFFER_SIZE), # The circular array needs a small buffer to guarantee the next bytes read can be matched
+        ModuloBuffer{UInt8}(LZO1X1_MIN_BUFFER_SIZE), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         CircularBuffer{AbstractCommand}(1), # Only the last command (or nothing) is kept
         Vector{UInt8}(),
     )

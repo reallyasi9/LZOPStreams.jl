@@ -3,15 +3,16 @@
     ModuloBuffer{T}(n::Integer)
     ModuloBuffer(iter)
 
-An `AbstractVector{T}` of fixed capacity `n` with periodic boundary conditions o nthe index.
+An `AbstractVector{T}` of fixed capacity `n` with periodic boundary conditions on the index.
 
 The first version of the constructor will create an empty buffer with a capacity of `n`. The
 second version will copy all elements of the iterable object `iter` into a new buffer with a
 capacity of `length(iter)` and element type `eltype(iter)`.
 
-If a new element added (either with `push!`, `pushfirst!`, or `append!`) would increase the
-size of the buffer past the capacity, the oldest element added will be overwritten (or the
-newest element added in the case of `pushfirst!`) to maintain the fixed capacity.
+If a new element added (either with `push!`, `pushfirst!`, `append!`, or `prepend!`) would
+increase the size of the buffer past the capacity, the oldest element added will be
+overwritten (or the newest element added in the case of `pushfirst!` or `prepend!`) to
+maintain the fixed capacity.
 
 If the buffer is not at capacity, then attempts to index into unfilled elements of the
 buffer will result in a `BoundsError`.
@@ -22,7 +23,7 @@ mutable struct ModuloBuffer{T} <: AbstractVector{T}
     length::Int
     first::Int # the first valid element
 
-    ModuloBuffer{T}(n::Integer) where {T} = new{T}(Vector{T}(undef, n), n, 0, 0)
+    ModuloBuffer{T}(n::Integer) where {T} = new{T}(Vector{T}(undef, n), n, 0, 1)
     ModuloBuffer(v) = new{eltype(v)}(Vector{eltype(v)}(v), length(v), length(v), 1)
 end
 
@@ -115,21 +116,6 @@ function Base.prepend!(mb::ModuloBuffer, items)
     return mb
 end
 
-# copyto! is a little strange because it ignores the buffer length
-function Base.copyto!(mb::ModuloBuffer, i::Integer, src::AbstractArray, j::Integer, n::Integer)
-    n == 0 && return mb
-    i = mod1(i, mb.capacity)
-    shift = 2 - mb.first - i
-    _circshift!(mb.data, shift)
-    mb.first = 1
-    nmod = min(n, mb.capacity)
-    # instead of writing j:j+n-1, write j+n-nmod:j+n-1
-    copyto!(mb.data, 1, src, j+n-nmod, nmod)
-    mb.length = max(mb.length, nmod)
-    mb.first -= i - 1
-    return mb
-end
-
 function Base.empty!(mb::ModuloBuffer)
    mb.first = mb.length = 0
    return mb 
@@ -215,34 +201,28 @@ available space in `buffer` and no elements will be evicted from the front of `b
 Returns a tuple of the number of elements copied from `source` and the number of elements
 evicted from `buffer` and copied to `sink`.
 """
-function shift_copy!(mb::ModuloBuffer, source::AbstractVector, i::Integer, sink::AbstractVector, j::Integer, n::Integer)
+function shift_copy!(mb::ModuloBuffer, source::AbstractVector, i::Integer, sink::AbstractVector, j::Integer, n::Integer=typemax(Int))
     n == 0 && return (0,0)
-    lost = max(length(mb) + n - capacity(mb), 0)
-    # we can cheat here because we do know how source is indexed
-    to_evict = lost
-    if to_evict > 0
-        eviction = min(length(mb), to_evict)
-        copyto!(sink, j, mb, 1, eviction)
-        to_evict -= eviction
-        j += eviction
-        mb.first += eviction
-    end
-    copyto!(sink, j, source, i, to_evict)
-    append!(mb, source[i:i+n-1])
-    return (n,lost)
+
+    (to_copy, buffer_evection, source_to_sink) = _max_copy_evict(mb, lastindex(source) - i + 1, lastindex(sink) - j + 1, n)
+
+    copyto!(sink, j, mb, 1, buffer_evection)
+    copyto!(sink, j+buffer_evection, source, i, source_to_sink)
+    append!(mb, source[i:i+to_copy-1])
+
+    return (to_copy, buffer_evection + source_to_sink)
 end
 
-function shift_copy!(mb::ModuloBuffer, source::AbstractVector, i::Integer, sink::AbstractVector, j::Integer)
-    max_source = lastindex(source)-i+1
-    n = min(capacity(mb), max_source)
-    remainder = capacity(mb) - length(mb)
-    loss = n - remainder
-    if loss > 0
-        max_loss = lastindex(sink)-j+1
-        loss = min(loss, max_loss)
-        n = remainder + loss
-    end
-    return shift_copy!(mb, source, i, sink, j, n)
+# Determine how much should be appended to the buffer, how much should be copied from buffer to sink, and how much should be copied from source straight to sink
+function _max_copy_evict(mb::ModuloBuffer, source_length::Integer, sink_length::Integer, n::Integer)
+    buffer_available = capacity(mb) - length(mb)
+    sink_available = sink_length + buffer_available
+    source_available = min(source_length, n)
+    to_copy = min(source_available, sink_available)
+    to_evict = max(to_copy - buffer_available, 0)
+    buffer_evection = min(length(mb), to_evict)
+    source_to_sink = max(to_evict - buffer_evection, 0)
+    return (to_copy, buffer_evection, source_to_sink)
 end
 
 
