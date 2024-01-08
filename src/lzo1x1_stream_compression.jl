@@ -35,8 +35,9 @@ The C implementation of LZO defined by liblzo2 requires that all compressable in
 struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
     input_buffer::ModuloBuffer{UInt8} # 49151-byte history of uncompressed input data for history copy command lookups
+
     command_buffer::CircularBuffer{AbstractCommand} # The last command readied by the compression algorithm
-    output_buffer::Vector{UInt8} # A buffer for matching past the end of a given input chunk (grows as needed)
+    output_buffer::Vector{UInt8} # A buffer for literals that can be longer than the 49151-byte lookback limit
 
     LZO1X1CompressorCodec() = new(HashMap{UInt32,Int}(
         LZO1X1_HASH_BITS,
@@ -79,13 +80,19 @@ function state(codec::LZO1X1CompressorCodec)
     end
 end
 
+function command(codec::LZO1X1CompressorCodec)
+    isempty(codec.command_buffer) && return nothing
+    return first(codec.command_buffer)
+end
+
 function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memory)
     # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety along with the output buffer
     # plus the appropriate commands to start a long literal or match and end the stream.
     # If in the middle of a history write, then the worst-case scenario is if the history copy command ends the copy and the rest of the input has to be written as a literal.
     if state(codec) == HISTORY
         # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
-        return 1 + (codec.write_head - codec.match_start_index) ÷ 255 + 1 + 2 + 1 + length(input) ÷ 255 + 1 + length(input) + 3
+        cmd = command(codec)::HistoryCopyCommand
+        return command_length(cmd) + 1 + length(input) ÷ 255 + 1 + length(input) + 3
     else
         # CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS + buffer
         return 1 + length(codec.output_buffer) ÷ 255 + 1 + length(codec.output_buffer) + 1 + length(input) ÷ 255 + 1 + length(input) + 3
@@ -98,12 +105,10 @@ function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Me
 end
 
 function TranscodingStreams.startproc(codec::LZO1X1CompressorCodec, ::Symbol, ::Error)
-    codec.read_head = 1
-    codec.write_head = 1
-    codec.state = FIRST_LITERAL
-    codec.match_start_index = 0
-    codec.previous_copy_command_was_short = false
-    codec.previous_literal_length = 0
+    empty!(codec.dictionary)
+    empty!(codec.input_buffer)
+    empty!(codec.command_buffer)
+    empty!(codec.output_buffer)
     return :ok
 end
 
