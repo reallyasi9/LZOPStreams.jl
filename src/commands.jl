@@ -36,10 +36,13 @@ Return the number of bytes that are to be copied to the output by `command`.
 function copy_length(::AbstractCommand) end
 
 function unsafe_decode(::Type{T}, ::Ptr{UInt8}, ::Integer=1) where {T <: AbstractCommand} end
-decode(::Type{T}, v::AbstractVector{UInt8}) where {T <: AbstractCommand} = GC.@preserve v unsafe_decode(T, pointer(v), 1)
+decode(::Type{T}, v::AbstractVector{UInt8}; kwargs...) where {T <: AbstractCommand} = GC.@preserve v unsafe_decode(T, pointer(v), 1; kwargs...)
 function unsafe_encode!(::Ptr{UInt8}, ::T, ::Integer=1) where {T <: AbstractCommand} end
-encode!(v::AbstractVector{UInt8}, c::T) where {T <: AbstractCommand} = GC.@preserve v unsafe_encode(pointer(v), c, 1)
-
+encode!(v::AbstractVector{UInt8}, c::T; kwargs...) where {T <: AbstractCommand} = GC.@preserve v unsafe_encode(pointer(v), c, 1; kwargs...)
+function encode(c::AbstractCommand; kwargs...)
+    v = zeros(UInt8, command_length(c))
+    return encode!(v, c; kwargs...)
+end
 """
     encode_run!(output, len, bits)::Int
 

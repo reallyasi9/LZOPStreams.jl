@@ -7,7 +7,6 @@ const LZO1X1_LONG_COPY_LENGTH_BITS = 3  # The number of bits in a long-distance 
 const LZO1X1_SHORT_COPY_LENGTH_BITS = 5  # The number of bits in a short-distance (under 16K) history copy command before resorting to run encoding
 
 const LZO1X1_MAX_DISTANCE = (0b11000000_00000000 - 1) % Int  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
-const LZO1X1_SKIP_TRIGGER = 5  # This tunes the compression ratio: higher values increases the compression but runs slower on incompressable data
 
 const LZO1X1_HASH_MAGIC_NUMBER = 0x1824429D
 const LZO1X1_HASH_BITS = 13  # The number of bits that are left after shifting in the hash calculation
@@ -21,7 +20,7 @@ const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
 end 
 
 """
-    LZO1X1CompressorCodec <: TranscodingStreams.Codec
+    LZO1X1CompressorCodec(level::Int=5) <: TranscodingStreams.Codec
 
 A struct that compresses data according to the 1X1 version of the LZO algorithm.
 
@@ -31,20 +30,35 @@ The LZO 1X1 algorithm is a Lempel-Ziv lossless compression algorithm defined by:
 - A maximum lookback distance of `0b11000000_00000000 - 1 = 49151` bytes;
 
 The C implementation of LZO defined by liblzo2 requires that all compressable information be loaded in working memory at once, and is therefore not adaptable to streaming as required by TranscodingStreams. The C library version claims to use only a 4096-byte hash map as additional working memory, but it also requires that a continuous space in memory be available to hold the entire output of the compressed data, the length of which is not knowable _a priori_ but can be larger than the uncompressed data by a factor of roughly 256/255. This implementation needs to keep 49151 bytes of input history in memory in addition to the 4096-byte hash map, but only expands the output as necessary during compression.
+
+Arguments:
+ - `level::Int = 5`: The speed/compression tradeoff paramter, with larger numbers representing slower compression at a higher compresison ratio. On a technical level, every `pow(2, level)` history misses increases by 1 the number of bytes skipped when searching for the next history match. The default (5) is recommended by the original liblzo2 authors as a good balance between speed and compression.
 """
-struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
+mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
     input_buffer::ModuloBuffer{UInt8} # 49151-byte history of uncompressed input data for history copy command lookups
 
     command_buffer::CircularBuffer{AbstractCommand} # The last command readied by the compression algorithm
     output_buffer::Vector{UInt8} # A buffer for literals that can be longer than the 49151-byte lookback limit
 
-    LZO1X1CompressorCodec() = new(HashMap{UInt32,Int}(
+    bytes_read::Int # Number of bytes read from the raw input stream (so lookbacks have a common starting point)
+    copy_start::Int # Where in the raw input stream a copy started
+    copy_length::Int # How many bytes match in a history copy
+
+    skip_trigger::Int # After 2^skip_trigger history misses, increase skip by 1
+    skip::Int # How many bytes to skip when searching for the next history match
+
+    LZO1X1CompressorCodec(level::Integer=5) = new(HashMap{UInt32,Int}(
         LZO1X1_HASH_BITS,
         LZO1X1_HASH_MAGIC_NUMBER),
         ModuloBuffer{UInt8}(LZO1X1_MIN_BUFFER_SIZE), # The circular array needs a small buffer to guarantee the next bytes read can be matched
         CircularBuffer{AbstractCommand}(1), # Only the last command (or nothing) is kept
         Vector{UInt8}(),
+        0,
+        0,
+        0,
+        level,
+        1,
     )
 end
 
@@ -53,7 +67,6 @@ const LZOCompressorStream{S} = TranscodingStream{LZO1X1CompressorCodec,S} where 
 LZOCompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOCompressorCodec(), stream; kwargs...)
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
-    empty!(codec.dictionary)
     empty!(codec.input_buffer)
     empty!(codec.command_buffer)
     empty!(codec.output_buffer)
@@ -106,15 +119,16 @@ end
 
 function TranscodingStreams.startproc(codec::LZO1X1CompressorCodec, ::Symbol, ::Error)
     empty!(codec.dictionary)
-    empty!(codec.input_buffer)
-    empty!(codec.command_buffer)
-    empty!(codec.output_buffer)
+    codec.bytes_read = 0
+    codec.copy_start = 0
+    codec.copy_length = 0
+    codec.skip = 1
     return :ok
 end
 
 function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory, output::Memory, ::Error)
 
-    input_length = length(input) % Int # length(::Memory) returns a UInt for whatever reason
+    input_length = length(input)
     
     # An input length of zero signals EOF
     if input_length == 0
@@ -126,7 +140,35 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     # Everything else is loaded into the buffer and consumed
     n_read = 0
     n_written = 0
-    while n_read < input_length
+    while n_read < input_length - LZO1X1_MIN_MATCH
+        # Looking for the end of a copy run
+        if state(codec) == HISTORY
+            # get the last 4-byte word for faster reading from the input
+            word = reinterpret_get(UInt32, codec.input_buffer[codec.copy_start+codec.copy_length-1])
+            while n_read < input_length - LZO1X1_MIN_MATCH
+                if input[n_read+1] == codec.input_buffer[codec.copy_start+codec.copy_length]
+                    n_read += 1
+                    codec.bytes_read += 1
+                    push!(codec.input_buffer, input[n_read])
+                    word = reinterpret_next(word, codec.input_buffer, codec.copy_start+codec.copy_length)
+                    codec.dictionary[word] = codec.bytes_read
+                    codec.copy_length += 1
+                else
+                    command = HistoryCopyCommand(codec.bytes_read - codec.copy_start, codec.copy_length, 0)
+                    push!(codec.command_buffer, command)
+                    break
+                end
+            end
+        end
+        # Looking for the end of a literal run
+        if state(codec) == LITERAL || state(codec) == FIRST_LITERAL
+            # get the next 4-byte word for faster reading from the input
+            word = reinterpret_get(UInt32, input, n_read+1)
+            while n_read < input_length - LZO1X1_MIN_MATCH
+                
+            end
+        end
+
         n_read += consume_input!(codec, input, n_read + 1)
 
         # The buffer is processed and potentially data is written to output
@@ -139,8 +181,10 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
 end
 
 function TranscodingStreams.finalize(codec::LZO1X1CompressorCodec)
+    empty!(codec.dictionary)
+    empty!(codec.input_buffer)
+    empty!(codec.command_buffer)
     empty!(codec.output_buffer)
-    empty!(codec.input_buffer.data)
     return
 end
 
@@ -270,7 +314,7 @@ function emit_copy!(codec::LZO1X1CompressorCodec, output::Memory, start_index::I
 end
 
 function consume_input!(codec::LZO1X1CompressorCodec, input::Memory, input_start::Int)
-    len = (length(input) - input_start + 1) % Int # length(input) is UInt
+    len = (length(input) - input_start + 1) # length(input) is UInt
     to_copy = min(len, LZO1X1_MAX_DISTANCE)
     # Memory objects do not allow range indexing, and circular vectors do not allow copyto!
     for i in 0:to_copy-1
@@ -281,15 +325,8 @@ function consume_input!(codec::LZO1X1CompressorCodec, input::Memory, input_start
 end
 
 
-function compress_and_emit!(codec::LZO1X1CompressorCodec, output::Memory, output_start::Int)
-    input_length = codec.write_head - codec.read_head
-
-    # nothing compresses to nothing
-    # This should never happen, as it signals EOS and that is handled elsewhere
-    if input_length == 0
-        return 0
-    end
-
+function compress_and_emit!(codec::LZO1X1CompressorCodec, input::Memory, input_start::Int, output::Memory, output_start::Int)
+    input_length = length(input) - input_start + 1
     input_idx = codec.read_head
     n_written = 0
 
