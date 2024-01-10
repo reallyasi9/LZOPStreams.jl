@@ -3,156 +3,17 @@ const MAX_SMALL_LITERAL_LENGTH = 3
 const LITERAL_MASK_BITS = 4
 const SHORT_DISTANCE_HISTORY_MASK_BITS = 5
 const LONG_DISTANCE_HISTORY_MASK_BITS = 3
+const END_OF_STREAM_LOOKBACK = 16384
+const END_OF_STREAM_COPY_LENGTH = 3
 
 """
-    AbstractCommand
+    CommandPair
 
-A type representing either a literal copy (`LiteralCopyCommand`) or a history lookback copy (`HistoryCopyCommand`).
+A mutable type representing both a history lookback copy and a literal copy.
 
-Types that inherit from `AbstractCommand` must implement the following methods:
-- `command_length(::AbstractCommand)::Int`, which returns the length of the encoded command in bytes;
-- `copy_length(::AbstractCommand)::Int`, which returns the number of bytes to be copied to the output;
-- one or both of:
-    - `decode(::Type{T}, ::AbstractVector{UInt8})::T where {T <: AbstractCommand}`, which decodes a command of type `T` from the start of an `AbstractVector{UInt8}`;
-    - `unsafe_decode(::Type{T}, ::Ptr{UInt8}, ::Integer)::T where {T <: AbstractCommand}`, which decodes a command of type `T` from the memory pointed to by the pointer at a given (one-indexed) offset;
-- one or both of:
-    - `encode!(::T, ::AbstractCommand)::T where {T <: AbstractVector{UInt8}}`, which encodes the command to the given vector and returns the modified vector;
-    - `unsafe_encode!(::Ptr{UInt8}, ::AbstractCommand, ::Integer)::Int`, which encodes the command to the memory pointed to at a given (one-indexed offset) and returns the number of bytes written.
-"""
-abstract type AbstractCommand end
+Except for the first or last command, commands in LZO 1X1 always come in pairs: a history lookback _always_ follows a literal, and if a literal copy of zero bytes is considered, a literal copy _always_ follows a history lookback. This means commands can be efficiently stored, parsed, and encoded as pairs of commands.
 
-"""
-    command_length(command)::Int
-
-Return the number of bytes in the encoded `command`.
-"""
-function command_length(::AbstractCommand) end
-
-"""
-    copy_length(command)::Int
-
-Return the number of bytes that are to be copied to the output by `command`.
-"""
-function copy_length(::AbstractCommand) end
-
-function unsafe_decode(::Type{T}, ::Ptr{UInt8}, ::Integer=1) where {T <: AbstractCommand} end
-decode(::Type{T}, v::AbstractVector{UInt8}; kwargs...) where {T <: AbstractCommand} = GC.@preserve v unsafe_decode(T, pointer(v), 1; kwargs...)
-function unsafe_encode!(::Ptr{UInt8}, ::T, ::Integer=1) where {T <: AbstractCommand} end
-encode!(v::AbstractVector{UInt8}, c::T; kwargs...) where {T <: AbstractCommand} = GC.@preserve v unsafe_encode(pointer(v), c, 1; kwargs...)
-function encode(c::AbstractCommand; kwargs...)
-    v = zeros(UInt8, command_length(c))
-    return encode!(v, c; kwargs...)
-end
-"""
-    encode_run!(output, len, bits)::Int
-
-Emit the number of zero bytes necessary to encode a length `len` in a command expecting `bits` leading bits, returning the number of bytes written to the output.
-
-Literal and copy lengths are always encoded as either a single byte or a sequence of three or more bytes. If `len < (1 << bits)`, the length will be encoded in the lower `bits` bits of the starting byte of `output` so the return will be 0. Otherwise, the return will be the number of additional bytes needed to encode the length. The returned number of bytes does not include the zeros in the first byte (the command) used to signal that a run encoding follows, but it does include the remainder.
-
-Note: the argument `len` is expected to be the _adjusted length_ for the command. Literals use an adjusted length of `len = length(literal) - 3` and copy commands use an adjusted literal length of `len = length(copy) - 2`.
-"""
-function encode_run!(output::AbstractVector{UInt8}, len::Integer, bits::Integer)
-    output[1] = zero(UInt8) # clear the bits just in case
-    mask = UInt8((1 << bits) - 1)
-    if len <= mask
-        output[1] |= len % UInt8
-        return 1
-    end
-    n_zeros, len = divrem(len-mask, 255)
-    if len == 0
-        len = 255
-        n_zeros -= 1
-    end
-    for j in 1:n_zeros
-        output[1+j] = zero(UInt8)
-    end
-    output[2 + n_zeros] = len % UInt8
-    return n_zeros + 2
-end
-
-"""
-    unsafe_encode_run!(p::Ptr{UInt8}, len, bits, [i=1])::Int
-
-Emit the number of zero bytes necessary to encode a length `len` in a command expecting `bits` leading bits, returning the number of bytes written to the output.
-
-Literal and copy lengths are always encoded as either a single byte or a sequence of three or more bytes. If `len < (1 << bits)`, the length will be encoded in the lower `bits` bits of the starting byte of `output` so the return will be 0. Otherwise, the return will be the number of additional bytes needed to encode the length. The returned number of bytes does not include the zeros in the first byte (the command) used to signal that a run encoding follows, but it does include the remainder.
-
-This method is "unsafe" in that it does not check if `p` points to an area of memory large enough to hold the resulting run before clobbering it.
-
-Note: the argument `len` is expected to be the _adjusted length_ for the command. Literals use an adjusted length of `len = length(literal) - 3` and copy commands use an adjusted literal length of `len = length(copy) - 2`.
-"""
-function unsafe_encode_run!(p::Ptr{UInt8}, len::Integer, bits::Integer, i::Integer=1)
-    unsafe_store!(p, zero(UInt8), i) # clear the bits just in case
-    mask = UInt8((1 << bits) - 1)
-    if len <= mask
-        unsafe_store!(p, unsafe_load(p, i) | len % UInt8, i)
-        return 1
-    end
-    n_zeros, len = divrem(len-mask, 255)
-    if len == 0
-        len = 255
-        n_zeros -= 1
-    end
-    for j in 1:n_zeros
-        unsafe_store!(p, zero(UInt8), i + j)
-    end
-    unsafe_store!(p, len % UInt8, i + n_zeros + 1)
-    return n_zeros + 2
-end
-
-"""
-    decode_run(input::Vector{UInt8}, bits)::Tuple{Int, Int}
-
-Decode the length of the run in bytes and the number of bytes to copy from `input` given a mask of `bits` bits.
-"""
-function decode_run(input::AbstractVector{UInt8}, bits::Integer)
-    mask = ((1 << bits) - 1) % UInt8
-    byte = first(input) & mask
-    len = byte % Int
-    if len != 0
-        return 1, len
-    end
-
-    first_non_zero = findfirst(!=(0), @view(input[2:end]))
-    if isnothing(first_non_zero)
-        return 0, 0 # code that we never found a non-zero byte
-    end
-    len += mask + (first_non_zero - 1) * 255 + input[1+first_non_zero]
-    
-    return first_non_zero + 1, len
-end
-
-"""
-    unsafe_decode_run(p::Ptr{UInt8}, i, bits)::Tuple{Int, Int}
-
-Decode the length of the run in bytes and the number of bytes to copy from the memory address pointed to by `p` offset by `i` given a mask of `bits` bits.
-
-This method is "unsafe" in that it will not stop reading from memory addresses after `p` until it finds a non-zero byte, whatever the consequences.
-"""
-function unsafe_decode_run(p::Ptr{UInt8}, i::Integer, bits::Integer)
-    mask = ((1 << bits) - 1) % UInt8
-    byte = unsafe_load(p, i) & mask
-    len = byte % Int
-    if len != 0
-        return 1, len
-    end
-
-    bytes = 1
-    byte = unsafe_load(p, i + bytes)
-    while byte == 0
-        len += 255
-        bytes += 1
-        byte = unsafe_load(p, i + bytes)
-    end
-
-    return bytes + 1, len + byte + mask
-end
-
-"""
-    struct LiteralCopyCommand <: AbstractCommand
-
-An encoded command representing a copy of a number of bytes from input straight to output.
+# Literal copies
 
 In LZO1X, literal copies come in three varieties:
 
@@ -185,139 +46,7 @@ Note that `17:20` are invalid values for a first copy command in LZO1X streams b
 !!! note
     The official `liblzo2` version of LZO1X properly _decodes_ these first literal copy codes, but never _encodes_ them when compressing data.
 
-See also [`CodecLZO.HistoryCopyCommand`](@ref).
-"""
-struct LiteralCopyCommand <: AbstractCommand
-    command_length::Int
-    copy_length::Int
-end
-
-const NULL_LITERAL_COMMAND = LiteralCopyCommand(0, 0)
-
-function LiteralCopyCommand(n::Int; first_literal::Bool = false)
-    if n == 0
-        return NULL_LITERAL_COMMAND
-    end
-    if first_literal && n <= MAX_SMALL_LITERAL_LENGTH
-        throw(ErrorException("first literal cannot copy fewer than $MAX_SMALL_LITERAL_LENGTH, got $n"))
-    elseif first_literal && n <= MAX_FIRST_LITERAL_LENGTH
-        return LiteralCopyCommand(1, n)
-    elseif n <= MAX_SMALL_LITERAL_LENGTH
-        return LiteralCopyCommand(0, n)
-    else
-        l = n - MAX_SMALL_LITERAL_LENGTH
-        b, _ = compute_run_remainder(l, LITERAL_MASK_BITS)
-        return LiteralCopyCommand(b, n)
-    end
-end
-
-command_length(l::LiteralCopyCommand) = l.command_length
-copy_length(l::LiteralCopyCommand) = l.copy_length
-
-"""
-    compute_run_remainder(n, bits)::Tuple{Int, Int}
-
-Compute the number of bytes necessary to encode a run of length `n` given a first-byte mask of length `bits`, also returning the remainder byte.
-
-!!! note
-    This method does not adjust `n` before computing the run length. Perform adjustments before calling this method.
-"""
-function compute_run_remainder(n::Integer, bits::Integer)
-    mask = UInt8((1 << bits) - 1)
-    if n <= mask
-        return 1, n
-    end
-    b, n = divrem(n-mask, 255)
-    if n == 0
-        return b+1, 255
-    else
-        return b+2, n
-    end
-end
-
-function decode(::Type{LiteralCopyCommand}, data::AbstractVector{UInt8})
-    command = first(data)
-    if command == 16
-        throw(ErrorException("invalid literal copy command detected"))
-    end
-    if command < 0b00010000
-        bytes, len = decode_run(data, LITERAL_MASK_BITS)
-        if bytes == 0
-            return NULL_LITERAL_COMMAND
-        end
-        return LiteralCopyCommand(bytes, len + MAX_SMALL_LITERAL_LENGTH)
-    else
-        return LiteralCopyCommand(1, command - 17)
-    end
-end
-
-function unsafe_decode(::Type{LiteralCopyCommand}, p::Ptr{UInt8}, i::Integer=1)
-    command = unsafe_load(p, i)
-    if command == 16
-        throw(ErrorException("invalid literal copy command detected"))
-    end
-    if command < 0b00010000
-        bytes, len = unsafe_decode_run(p, i, 4)
-        return LiteralCopyCommand(bytes, len + 3)
-    else
-        return LiteralCopyCommand(1, command - 17)
-    end
-end
-
-function encode!(data::AbstractVector{UInt8}, c::LiteralCopyCommand; first_literal::Bool=false)
-    if first_literal
-        # This is completely valid for the first literal, but liblzo2 doesn't use this special encoding
-        if c.copy_length <= MAX_FIRST_LITERAL_LENGTH && c.command_length == 1
-            data[1] = (c.copy_length+17) % UInt8
-            return data
-        else
-            data[1] = zero(UInt8)
-            encode_run!(data, c.copy_length - 3, 4)
-            return data
-        end
-    end
-
-    # 2-bit literal lengths are encoded in the low two bits of the previous command.
-    # Interestingly, because the distance is encoded in LE, the 2-bit literal incoding is always on the first byte of the output buffer.
-    if c.copy_length < 4
-        data[1] &= 0b11111100
-        data[1] |= c.copy_length % UInt8
-        return data
-    end
-
-    # everything else is encoded raw or as a run of unary zeros plus a remainder
-    data[1] = zero(UInt8)
-    encode_run!(data, c.copy_length - 3, 4)
-    return data
-end
-
-function unsafe_encode!(p::Ptr{UInt8}, c::LiteralCopyCommand, i::Integer=1; first_literal::Bool=false)
-    if first_literal
-        # This is completely valid for the first literal, but liblzo2 doesn't use this special encoding
-        if c.copy_length <= MAX_FIRST_LITERAL_LENGTH && c.command_length == 1
-            unsafe_store!(p, (c.copy_length+17) % UInt8, i)
-            return 1
-        else
-            unsafe_store!(p, zero(UInt8), i)
-            return unsafe_encode_run!(p, c.copy_length - 3, 4, i)
-        end
-    end
-
-    # 2-bit literal lengths are encoded in the low two bits of the previous command.
-    # Interestingly, because the distance is encoded in LE, the 2-bit literal incoding is always on the first byte of the output buffer.
-    if c.copy_length < 4
-        unsafe_store!(p, (unsafe_load(p, i) & 0b11111100) | (c.copy_length % UInt8), i)
-        return 1
-    end
-
-    # everything else is encoded raw or as a run of unary zeros plus a remainder
-    return unsafe_encode_run!(p, c.copy_length - 3, 4, i)
-end
-
-"""
-    struct HistoryCopyCommand <: AbstractCommand
-
-An encoded command representing a copy of a number of bytes from the already produced output back to the output.
+# History lookback copies
 
 In LZO1X, history lookback copies come in five varieties, the format of which is determined by the number of bytes copied, the lookback distance, and whether or not the previous command had a short literal copy tagged on the end:
 
@@ -392,299 +121,390 @@ If the previous command was a long literal copy (of four of more bytes), then th
 !!! note
     Because encoding these special commands require a historical match of fewer than four bytes, they are never _encoded_ by the LZO1X algorithm: however, they are valid LZO1X commands, and the LZO1X _decoder_ will interpret them correctly.
 
-See also [`CodecLZO.LiteralCopyCommand`](@ref).
+See also: [`decode`](@ref) and [`encode`](@ref).
 """
-struct HistoryCopyCommand <: AbstractCommand
-    command_length::Int
+mutable struct CommandPair
+    first_literal::Bool
     lookback::Int
     copy_length::Int
-    post_copy_literals::UInt8
+    literal_length::Int
 end
 
-const NULL_HISTORY_COMMAND = HistoryCopyCommand(0, 0, 0, 0)
-const END_OF_STREAM_COMMAND = HistoryCopyCommand(3, 16384, 3, 0) # Corresponds to byte sequence 0x11 0x00 0x00
+const NULL_COMMAND = CommandPair(false, 0, 0, 0)
+const END_OF_STREAM_COMMAND = CommandPair(false, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0)
 
-function HistoryCopyCommand(lookback::Integer, copy_length::Integer, post_copy_literals::Integer; last_literals_copied::Integer=4)
-    if copy_length < 2 || lookback < 1 || post_copy_literals > 3
-        # history copies of 1 byte or zero distance are not allowed
-        throw(ErrorException("copy length ($copy_length), lookback ($lookback), post-copy literal ($post_copy_literals) combination not allowed"))
-    end
-    command_length = 0
-    if copy_length == 2
-        if lookback > 1 << 10 || last_literals_copied < 1 || last_literals_copied > 3
-            throw(ErrorException("copy length 2 must have a lookback less than $(1<<10) (got $lookback) and last literals copied between 1 and 3 (got $last_literals_copied)"))
-        else
-            command_length = 2
-        end
-    elseif copy_length == 3 && 2048 < lookback <= 3072 && last_literals_copied >= 4
-        command_length = 2
-    elseif lookback <= 1 << 11 && copy_length <= 8
-        command_length = 2
-    elseif lookback <= 1 << 14
-        b, _ = compute_run_remainder(copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS)
-        command_length = 2 + b
+function _validate_commands(cp::CommandPair, last_literal_length::Integer=0)
+    cp.copy_length < 2 && throw(ErrorException("history copy length ($(cp.copy_length)) not allowed"))
+    cp.lookback < 1 && throw(ErrorException("history copy lookback ($(cp.lookback)) not allowed"))
+    cp.literal_length < 0 && throw(ErrorException("literal length ($(cp.literal_length)) not allowed"))
+    cp.copy_length == 2 && (cp.lookback > 1 << 10 || cp.last_literal_length < 1 || last_literal_length > 3) && throw(ErrorException("history copy length 2 must have a lookback ≤ $(1<<10) (got $(cp.lookback)) and last literals copied ∈ [1,3] (got $(last_literal_length))"))
+    cp.first_literal && cp.literal_length <= MAX_SMALL_LITERAL_LENGTH && throw(ErrorException("first literal cannot copy fewer than $MAX_SMALL_LITERAL_LENGTH, got $(cp.literal_length)"))
+end
+
+"""
+    command_length(command, [last_literal_length=0])::Int
+
+Return the number of bytes in the encoded commands.
+"""
+function command_length(cp::CommandPair, last_literal_length::Integer=0)
+    _validate_commands(cp, last_literal_length)
+
+    history_copy_command_length = 0
+    if cp.first_literal
+        history_copy_command_length = 0
+    elseif cp.copy_length == 2
+        history_copy_command_length = 2
+    elseif cp.copy_length == 3 && 2048 < cp.lookback <= 3072 && last_literal_length >= 4
+        history_copy_command_length = 2
+    elseif cp.lookback <= 1 << 11 && cp.copy_length <= 8
+        history_copy_command_length = 2
+    elseif cp.lookback <= 1 << 14
+        b, _ = compute_run_remainder(cp.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS)
+        history_copy_command_length = 2 + b
     else
-        b, _ = compute_run_remainder(copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
-        command_length = 2 + b
+        b, _ = compute_run_remainder(cp.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
+        history_copy_command_length = 2 + b
     end
 
-    return HistoryCopyCommand(command_length, lookback, copy_length, post_copy_literals)
+    literal_copy_command_length = 0
+    if cp.first_literal && cp.literal_length <= MAX_FIRST_LITERAL_LENGTH
+        literal_copy_command_length = 1
+    elseif cp.literal_length <= MAX_SMALL_LITERAL_LENGTH
+        literal_copy_command_length = 0
+    else
+        l = cp.literal_length - MAX_SMALL_LITERAL_LENGTH
+        literal_copy_command_length, _ = compute_run_remainder(l, LITERAL_MASK_BITS)
+    end
+
+    return history_copy_command_length + literal_copy_command_length
 end
 
-command_length(h::HistoryCopyCommand) = h.command_length
-copy_length(h::HistoryCopyCommand) = h.copy_length
+"""
+    encode_run!(output, len, bits, [start_index=1])::Int
 
-lookback(h::HistoryCopyCommand) = h.lookback
-post_copy_literals(h::HistoryCopyCommand) = h.post_copy_literals
+Emit the number of zero bytes necessary to encode a length `len` in a command expecting `bits` leading bits to `output`, optionally starting at index `start_index`, returning the number of bytes written.
 
-function decode(::Type{HistoryCopyCommand}, data::AbstractVector{UInt8}; last_literals_copied::Integer=0)
+Literal and history copy lengths are always encoded as either a single byte or a sequence of three or more bytes. If `len < (1 << bits)`, the length will be encoded in the lower `bits` bits of the starting byte of `output` so the return will be 1. Otherwise, the return will be the number of bytes needed to encode the length.
+
+If `output` is not large enough to hold the length of the run, this function returns `0` and `output` is unchanged.
+
+Arguments:
+- `output`: The target array-like object that will be written to. The type only needs to implement `setindex!(output, ::UInt8, ::Int)` and `lastindex(output)`.
+- `len::Integer`: The _adjusted_ length to encode (see note).
+- `bits::Integer`: The number of bits that makes up the length mask of the command.
+- `start_index::Integer=1`: Where to begin writing the encoded run in `output`.
+
+!!! note
+    The argument `len` is expected to be the _adjusted length_ for the command. Literals use an adjusted length of `len = length(literal) - 3` and copy commands use an adjusted literal length of `len = length(copy) - 2`.
+"""
+function encode_run!(output, len::Integer, bits::Integer, start_index::Integer=1)
+    remaining_bytes = lastindex(output) - start_index + 1
+    remaining_bytes < 1 && return 0
+
+    mask = UInt8((1 << bits) - 1)
+    
+    if len <= mask
+        output[start_index] = zero(UInt8) # clear the bits just in case
+        output[start_index] |= len % UInt8
+        return 1
+    end
+    
+    n_zeros, len = divrem(len-mask, 255)
+    if len == 0
+        len = 255
+        n_zeros -= 1
+    end
+    
+    remaining_bytes < n_zeros + 1 && return 0
+
+    output[start_index] = zero(UInt8) # clear the bits just in case
+    for j in 1:n_zeros
+        output[start_index+j] = zero(UInt8)
+    end
+    output[start_index + n_zeros + 1] = len % UInt8
+    return n_zeros + 2
+end
+
+"""
+    encode_run(len::Integer, bits::Integer)::Vector{UInt8}
+
+Emit a vector of the number of zero bytes necessary to encode a length `len` in a command expecting `bits` leading bits.
+
+See: [`encode_run!`](@ref).
+"""
+function encode_run(len::Integer, bits::Integer)
+    l, _ = compute_run_remainder(len, bits)
+    output = zeros(UInt8, l)
+    encode_run!(output, len, bits)
+    return output
+end
+
+"""
+    decode_run(input, bits::Integer, [start_index::Integer = 1])::Tuple{Int, Int}
+
+Decode the number of bytes in the encoding and the length of the run in bytes of the run in `input` given a mask of `bits` bits, optionally starting decoding at index `start_index`.
+"""
+function decode_run(input, bits::Integer, start_index::Integer = 1)
+    mask = ((1 << bits) - 1) % UInt8
+    byte = input[start_index] & mask
+    len = byte % Int
+    if len != 0
+        return 1, len
+    end
+
+    first_non_zero = start_index+1
+    while first_non_zero < lastindex(input)
+        input[first_non_zero] != 0 && break
+        first_non_zero += 1
+    end
+
+    if input[first_non_zero] == 0
+        return 0, 0 # code that we never found a non-zero byte
+    end
+    len += mask + (first_non_zero - start_index - 1) * 255 + input[first_non_zero]
+    
+    return first_non_zero - start_index + 1, len
+end
+
+
+"""
+    compute_run_remainder(n, bits)::Tuple{Int, Int}
+
+Compute the number of bytes necessary to encode a run of length `n` given a first-byte mask of length `bits`, also returning the remainder byte.
+
+!!! note
+    This method does not adjust `n` before computing the run length. Perform adjustments before calling this method.
+"""
+function compute_run_remainder(n::Integer, bits::Integer)
+    mask = UInt8((1 << bits) - 1)
+    if n <= mask
+        return 1, n
+    end
+    b, n = divrem(n-mask, 255)
+    if n == 0
+        return b+1, 255
+    else
+        return b+2, n
+    end
+end
+
+function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_literal::Bool = false, last_literal_length::Integer = 0)
+    if !first_literal
+        n_read, lookback, copy_length, post_copy_literals = decode_history_copy(data, start_index, last_literal_length)
+        if lookback == 0
+            return 0, NULL_COMMAND
+        elseif lookback == END_OF_STREAM_LOOKBACK && copy_length == END_OF_STREAM_COPY_LENGTH
+            return n_read, END_OF_STREAM_COMMAND
+        end
+    else
+        n_read = lookback = copy_length = post_copy_literals = 0
+    end
+
+    if post_copy_literals == 0
+        r, literal_length = decode_literal_copy(data[start_index + n_read], first_literal)
+        if r == 0
+            return 0, NULL_COMMAND
+        end
+        n_read += r
+    else
+        literal_length = post_copy_literals
+    end
+
+    return n_read, CommandPair(first_literal, lookback, copy_length, literal_length)
+end
+
+
+function decode_history_copy(data, start_index::Integer = 1, last_literal_length::Integer = 0)
     remaining_bytes = length(data)
-    command = first(data)
+    command = data[start_index]
 
     # 2-byte commands first
     if remaining_bytes < 2
-        return NULL_HISTORY_COMMAND
+        return 0, 0, 0, 0
     elseif command < 0b00010000
         after = command & 0b00000011
-        if last_literals_copied > 0 && last_literals_copied < 4
+        if 0 < last_literal_length < 4
             len = 2
-            dist = ((data[2] % Int) << 2) + ((command & 0b00001100) >> 2) + 1
-        elseif last_literals_copied >= 4
+            dist = ((data[start_index + 1] % Int) << 2) + ((command & 0b00001100) >> 2) + 1
+        elseif last_literal_length >= 4
             len = 3
-            dist = ((data[2] % Int) << 2) + ((command & 0b00001100) >> 2) + 2049
+            dist = ((data[start_index + 1] % Int) << 2) + ((command & 0b00001100) >> 2) + 2049
         else
-            throw(ErrorException("command 00000000 with zero last literals copied is a literal copy command: call decode(LiteralCopyCommand, data) instead"))
+            throw(ErrorException("command 00000000 with zero last literals copied is a literal copy command: call decode_literal_copy(data) instead"))
         end
-        return HistoryCopyCommand(2, dist, len, after)
+        return 2, dist, len, after
     elseif (command & 0b11000000) != 0
         after = command & 0b00000011
         if command < 0b10000000
             len = 3 + ((command & 0b00100000) >> 5)
-            dist = ((data[2] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
+            dist = ((data[start_index + 1] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
         else
             len = 5 + ((command & 0b01100000) >> 5)
-            dist = ((data[2] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
+            dist = ((data[start_index + 1] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
         end
-        return HistoryCopyCommand(2, dist, len, after)
+        return 2, dist, len, after
     elseif command < 0b00100000
         # variable-width length encoding
         msb = ((command & 0b00001000) % Int) << 11
-        bytes, len = decode_run(data, LONG_DISTANCE_HISTORY_MASK_BITS)
+        bytes, len = decode_run(data, LONG_DISTANCE_HISTORY_MASK_BITS, start_index)
         if bytes == 0 || remaining_bytes < bytes + 2
-            return NULL_HISTORY_COMMAND
+            return 0, 0, 0, 0
         end
-        dist = 16384 + msb + ((data[bytes + 2] % Int) << 6) + ((data[bytes + 1] % Int) >> 2)
-        after = data[bytes + 1] & 0b00000011
-        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
+        dist = 16384 + msb + ((data[start_index + bytes + 1] % Int) << 6) + ((data[start_index + bytes] % Int) >> 2)
+        after = data[start_index + bytes + 1] & 0b00000011
+        return bytes + 2, dist, len + 2, after
     else
         # variable-width length encoding
-        bytes, len = decode_run(data, SHORT_DISTANCE_HISTORY_MASK_BITS)
+        bytes, len = decode_run(data, SHORT_DISTANCE_HISTORY_MASK_BITS, start_index)
         if bytes == 0 || remaining_bytes < bytes + 2
-            return NULL_HISTORY_COMMAND
+            return 0, 0, 0, 0
         end
-        dist = 1 + ((data[bytes + 2] % Int) << 6) + ((data[bytes + 1] % Int) >> 2)
-        after = data[bytes + 1] & 0b00000011
-        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
+        dist = 1 + ((data[start_index + bytes + 1] % Int) << 6) + ((data[start_index + bytes] % Int) >> 2)
+        after = data[start_index + bytes] & 0b00000011
+        return bytes + 2, dist, len + 2, after
     end
 end
 
-function unsafe_decode(::Type{HistoryCopyCommand}, p::Ptr{UInt8}, i::Integer = 1; last_literals_copied::Integer = 0)
-    command = unsafe_load(p, i)
-
-    # 2-byte commands first
+function decode_literal_copy(data, start_index::Integer=1, first_literal::Bool=false)
+    command = data[start_index]
+    if command == 16
+        throw(ErrorException("invalid literal copy command $(bitstring(command)) detected"))
+    end
     if command < 0b00010000
-        after = command & 0b00000011
-        if last_literals_copied > 0 && last_literals_copied < 4
-            len = 2
-            dist = ((unsafe_load(p, i+1) % Int) << 2) + ((command & 0b00001100) >> 2) + 1
-        elseif last_literals_copied >= 4
-            len = 3
-            dist = ((unsafe_load(p, i+1) % Int) << 2) + ((command & 0b00001100) >> 2) + 2049
-        else
-            throw(ErrorException("command 00000000 with zero last literals copied is a literal copy command: call decode(LiteralCopyCommand, data) instead"))
-        end
-        return HistoryCopyCommand(2, dist, len, after)
-    elseif (command & 0b11000000) != 0
-        after = command & 0b00000011
-        if command < 0b10000000
-            len = 3 + ((command & 0b00100000) >> 5)
-            dist = ((unsafe_load(p, i+1) % Int) << 3) + ((command & 0b00011100) >> 2) + 1
-        else
-            len = 5 + ((command & 0b01100000) >> 5)
-            dist = ((unsafe_load(p, i+1) % Int) << 3) + ((command & 0b00011100) >> 2) + 1
-        end
-        return HistoryCopyCommand(2, dist, len, after)
-    elseif command < 0b00100000
-        # variable-width length encoding
-        msb = ((command & 0b00001000) % Int) << 11
-        bytes, len = unsafe_decode_run(p, i, LONG_DISTANCE_HISTORY_MASK_BITS)
+        bytes, len = decode_run(data, LITERAL_MASK_BITS, start_index)
         if bytes == 0
-            return NULL_HISTORY_COMMAND
+            return 0, 0
         end
-        dist = 16384 + msb + ((unsafe_load(p, i + bytes + 1) % Int) << 6) + ((unsafe_load(p, i + bytes) % Int) >> 2)
-        after = unsafe_load(p, i + bytes) & 0b00000011
-        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
+        return bytes, len + MAX_SMALL_LITERAL_LENGTH
+    elseif first_literal
+        return 1, command - 17
     else
-        # variable-width length encoding
-        bytes, len = unsafe_decode_run(p, i, SHORT_DISTANCE_HISTORY_MASK_BITS)
-        if bytes == 0
-            return NULL_HISTORY_COMMAND
-        end
-        dist = 1 + ((unsafe_load(p, i + bytes + 1) % Int) << 6) + ((unsafe_load(p, i + bytes) % Int) >> 2)
-        after = unsafe_load(p, i + bytes) & 0b00000011
-        return HistoryCopyCommand(bytes + 2, dist, len + 2, after)
+        throw(ErrorException("invalid literal copy command $(bitstring(command)) detected"))
     end
 end
 
-function encode!(data::AbstractVector{UInt8}, c::HistoryCopyCommand; last_literals_copied::Integer=0)
-    if c == END_OF_STREAM_COMMAND
-        data[1:3] = UInt8[0b00010001,0b00000000,0b00000000]
-        return data
+
+function encode!(data, cp::CommandPair, start_index::Integer=1; last_literal_length::Integer=0)
+    _validate_commands(cp)
+    n_written = 0
+    if !cp.first_literal
+        n_written += encode_history_copy!(data, cp, start_index, last_literal_length)
+    end
+    n_written += encode_literal_copy!(data, cp, start_index + n_written)
+    return n_written
+end
+
+function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_literal_length::Integer)
+    remaining_bytes = lastindex(data) - start_index + 1
+
+    if cp.lookback == END_OF_STREAM_LOOKBACK && cp.copy_length == END_OF_STREAM_COPY_LENGTH
+        remaining_bytes < 3 && return 0
+        data[start_index] = UInt8(0b00010001)
+        data[start_index + 1] = zero(UInt8)
+        data[start_index + 2] = zero(UInt8)
+        return 3
     end
 
     # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
-    if c.copy_length == 2
-        if last_literals_copied == 0
+    S = cp.literal_length <= MAX_SMALL_LITERAL_LENGTH ? UInt8(cp.literal_length) : zero(UInt8)
+    if cp.copy_length == 2
+        if last_literal_length == 0
             throw(ErrorException("invalid length 2 copy command with zero last literals copied"))
-        elseif last_literals_copied < 4 && c.lookback <= 1024
+        elseif last_literal_length < 4 && cp.lookback <= 1024
+            remaining_bytes < 2 && return 0
             # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
-            distance = c.lookback - 1
+            distance = cp.lookback - 1
             D = UInt8(distance & 0b00000011)
             H = UInt8((distance - D) >> 2)
-            data[1] = (D << 2) | c.post_copy_literals
-            data[2] = H
-            return data
+            data[start_index] = (D << 2) | S
+            data[start_index + 1] = H
+            return 2
         else
-            throw(ErrorException("invalid length 2 copy command with last literals copied greater than 3 (got $last_literals_copied) or lookback greater than 1024 (got $(c.lookback))"))
+            throw(ErrorException("invalid length 2 copy command with last literals copied greater than 3 (got $last_literal_length) or lookback greater than 1024 (got $(cp.lookback))"))
         end
-    elseif last_literals_copied >= 4 && c.copy_length == 3 && 2049 <= c.lookback <= 3072
+    elseif last_literal_length >= 4 && cp.copy_length == 3 && 2049 <= cp.lookback <= 3072
+        remaining_bytes < 2 && return 0
         # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 2049
-        distance = c.lookback - 2049
+        distance = cp.lookback - 2049
         D = UInt8(distance & 0b00000011)
         H = UInt8((distance - D) >> 2)
-        data[1] = (D << 2) | c.post_copy_literals
-        data[2] = H
-        return data
-    elseif 3 <= c.copy_length <= 4 && c.lookback < 2049
+        data[start_index] = (D << 2) | S
+        data[start_index+1] = H
+        return 2
+    elseif 3 <= cp.copy_length <= 4 && cp.lookback < 2049
+        remaining_bytes < 2 && return 0
         # 0b01LDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
-        distance = c.lookback - 1
+        distance = cp.lookback - 1
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
-        L = UInt8(c.copy_length - 3)
-        data[1] = 0b01000000 | (L << 5) | (D << 2) | c.post_copy_literals
-        data[2] = H
-        return data
-    elseif 5 <= c.copy_length <= 8 && c.lookback <= 2049
+        L = UInt8(cp.copy_length - 3)
+        data[start_index] = 0b01000000 | (L << 5) | (D << 2) | S
+        data[start_index+1] = H
+        return 2
+    elseif 5 <= cp.copy_length <= 8 && cp.lookback <= 2049
+        remaining_bytes < 2 && return 0
         # 0b1LLDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
-        distance = c.lookback - 1
+        distance = cp.lookback - 1
         D = UInt8(distance & 0b00000111)
         H = UInt8((distance - D) >> 3)
-        L = UInt8(c.copy_length - 5)
-        data[1] = 0b10000000 | (L << 5) | (D << 2) | c.post_copy_literals
-        data[2] = H
-        return data
+        L = UInt8(cp.copy_length - 5)
+        data[start_index] = 0b10000000 | (L << 5) | (D << 2) | S
+        data[start_index+1] = H
+        return 2
     else
-        distance = c.lookback
+        distance = cp.lookback
         # NOTE: a distance of 16384 can be encoded in two different ways (this and the command that follows)
         # HOWEVER, end-of-stream is identical to a copy of 3 bytes from a lookback of 16384, so
         # lookbacks of 16384 are always encoded with this command.
         if distance <= 16384
             # 0b001LLLLL_*_DDDDDDSS_DDDDDDDD, distance = D + 1, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
-            n_written = encode_run!(data, c.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS)
-            data[1] |= 0b00100000
+            n_written = encode_run!(data, cp.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS, start_index)
+            data[start_index] |= 0b00100000
             distance -= 1
         else
             # 0b0001HLLL_*_DDDDDDSS_DDDDDDDD, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
             n_written = encode_run!(data, c.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
-            data[1] |= 0b00010000
+            data[start_index] |= 0b00010000
             distance -= 16384
             H = UInt8((distance >> 14) & 1)
-            data[1] |= H << 3
+            data[start_index] |= H << 3
         end
+        n_written == 0 && return 0
+        remaining_bytes < 2 + n_written && return 0
         DH = UInt8((distance >> 6) & 0b11111111)
         DL = UInt8(distance & 0b00111111)
-        data[n_written+1] = (DL << 2) | c.post_copy_literals # This is popped off the top with popfirst! when encoding the next literal length
-        data[n_written+2] = DH
-        return data
+        data[start_index+n_written] = (DL << 2) | S
+        data[start_index+n_written+1] = DH
+        return n_written+2
     end
 end
 
-function unsafe_encode!(p::Ptr{UInt8}, c::HistoryCopyCommand, i::Integer = 1; last_literals_copied::Integer = 0)
-    if c == END_OF_STREAM_COMMAND
-        unsafe_store!(p, 0b00010001, i)
-        unsafe_store!(p, 0b00000000, i+1)
-        unsafe_store!(p, 0b00000000, i+2)
-        return 3
+function encode_literal_copy!(data, cp::CommandPair, start_index::Integer)
+    remaining_bytes = lastindex(data) - start_index + 1
+    if remaining_bytes < 1
+        return 0
     end
 
-    # All LZO1X1 matches are 4 bytes or more, so command codes 0-15 and 64-95 are never used, but we add the logic for completeness
-    if c.copy_length == 2
-        if last_literals_copied == 0
-            throw(ErrorException("invalid length 2 copy command with zero last literals copied"))
-        elseif last_literals_copied < 4 && c.lookback <= 1024
-            # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 1
-            distance = c.lookback - 1
-            D = UInt8(distance & 0b00000011)
-            H = UInt8((distance - D) >> 2)
-            unsafe_store!(p, (D << 2) | c.post_copy_literals, i)
-            unsafe_store!(p, H, i+1)
-            return 2
+    if cp.first_literal
+        # This is completely valid for the first literal, but liblzo2 doesn't use this special encoding
+        if cp.literal_length <= MAX_FIRST_LITERAL_LENGTH
+            data[start_index] = (cp.literal_length+17) % UInt8
+            return 1
         else
-            throw(ErrorException("invalid length 2 copy command with last literals copied greater than 3 (got $last_literals_copied) or lookback greater than 1024 (got $(c.lookback))"))
+            data[start_index] = zero(UInt8)
+            return encode_run!(data, cp.literal_length - 3, LITERAL_MASK_BITS, start_index)
         end
-    elseif last_literals_copied >= 4 && c.copy_length == 3 && 2049 <= c.lookback <= 3072
-        # 0b0000DDSS_HHHHHHHH, distance = (H << 2) + D + 2049
-        distance = c.lookback - 2049
-        D = UInt8(distance & 0b00000011)
-        H = UInt8((distance - D) >> 2)
-        unsafe_store!(p, (D << 2) | c.post_copy_literals, i)
-        unsafe_store!(p, H, i+1)
-        return 2
-    elseif 3 <= c.copy_length <= 4 && c.lookback < 2049
-        # 0b01LDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
-        distance = c.lookback - 1
-        D = UInt8(distance & 0b00000111)
-        H = UInt8((distance - D) >> 3)
-        L = UInt8(c.copy_length - 3)
-        unsafe_store!(p, 0b01000000 | (L << 5) | (D << 2) | c.post_copy_literals, i)
-        unsafe_store!(p, H, i+1)
-        return 2
-    elseif 5 <= c.copy_length <= 8 && c.lookback <= 2049
-        # 0b1LLDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
-        distance = c.lookback - 1
-        D = UInt8(distance & 0b00000111)
-        H = UInt8((distance - D) >> 3)
-        L = UInt8(c.copy_length - 5)
-        unsafe_store!(p, 0b10000000 | (L << 5) | (D << 2) | c.post_copy_literals, i)
-        unsafe_store!(p, H, i+1)
-        return 2
-    else
-        distance = c.lookback
-        # NOTE: a distance of 16384 can be encoded in two different ways (this and the command that follows)
-        # HOWEVER, end-of-stream is identical to a copy of 3 bytes from a lookback of 16384, so
-        # lookbacks of 16384 are always encoded with this command.
-        if distance <= 16384
-            # 0b001LLLLL_*_DDDDDDSS_DDDDDDDD, distance = D + 1, length = 2 + (L ?: *)
-            # Note that D is encoded LE in the last 16 bits!
-            run = unsafe_encode_run!(p, c.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS, i)
-            unsafe_store!(p, unsafe_load(p, i) | 0b00100000, i)
-            distance -= 1
-        else
-            # 0b0001HLLL_*_DDDDDDSS_DDDDDDDD, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
-            # Note that D is encoded LE in the last 16 bits!
-            run = unsafe_encode_run!(p, c.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS, i)
-            distance -= 16384
-            H = UInt8((distance >> 14) & 1)
-            unsafe_store!(p, unsafe_load(p, i) | 0b00010000 | (H << 3), i)
-        end
-        DH = UInt8((distance >> 6) & 0b11111111)
-        DL = UInt8(distance & 0b00111111)
-        unsafe_store!(p, (DL << 2) | c.post_copy_literals, i+run) # This is popped off the top with popfirst! when encoding the next literal length
-        unsafe_store!(p, DH, i+run+1)
-        return run + 2
     end
+
+    # 2-bit literal lengths are encoded in the low two bits of the previous command.
+    # Interestingly, because the distance is encoded in LE, the 2-bit literal incoding is always on the first byte of the output buffer.
+    if cp.literal_length <= MAX_SMALL_LITERAL_LENGTH
+        return 0
+    end
+
+    # everything else is encoded raw or as a run of unary zeros plus a remainder
+    data[start_index] = zero(UInt8)
+    return encode_run!(data, c.copy_length - 3, LITERAL_MASK_BITS, start_index)
 end
-
-

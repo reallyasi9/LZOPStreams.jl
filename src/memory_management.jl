@@ -67,3 +67,18 @@ function Base.copyto!(d::AbstractArray{UInt8}, doffs::Integer, src::Memory, soff
     GC.@preserve d src unsafe_copyto!(pointer(d, doffs), pointer(src, soffs), n)
     return d
 end
+
+"""
+    maxcopy!(dest, start_index, src)::Int
+
+Copy as much of `src` into `dest` starting at index `start_index` as possible.
+
+Requires `lastindex(dest)`, `length(src)`, and `copyto!(dest, start_index, src, 1, ::Int)` to be defined for `dest` and `src` types.
+
+Returns the number of bytes copied.
+"""
+function maxcopy!(dest, start_index, src)
+    n = min(lastindexh(dest) - start_index + 1, length(src))
+    @inbounds copyto!(dest, start_index, src, 1, n)
+    return n
+end

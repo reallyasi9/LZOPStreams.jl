@@ -1,10 +1,5 @@
-const LZO1X1_LAST_LITERAL_SIZE = 3  # the number of bytes in the last literal
 const LZO1X1_LAST_LITERAL_MAX_SIZE = 20 # do not try to match in history if the remaining literal is this size or less
 const LZO1X1_MIN_MATCH = sizeof(UInt32)  # the smallest number of bytes to consider in a dictionary lookup
-const LZO1X1_MAX_INPUT_SIZE = 0x7e00_0000 % Int  # 2133929216 bytes, seemingly arbitrary?
-const LZO1X1_LITERAL_LENGTH_BITS = 4  # The number of bits in a literal command before resorting to run encoding
-const LZO1X1_LONG_COPY_LENGTH_BITS = 3  # The number of bits in a long-distance (16K to 48K) history copy command before resorting to run encoding
-const LZO1X1_SHORT_COPY_LENGTH_BITS = 5  # The number of bits in a short-distance (under 16K) history copy command before resorting to run encoding
 
 const LZO1X1_MAX_DISTANCE = (0b11000000_00000000 - 1) % Int  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
 
@@ -17,6 +12,8 @@ const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
     FIRST_LITERAL # Waiting on end of first literal
     HISTORY # Waiting on end of historical match
     LITERAL # Waiting on end of long literal
+    FLUSH_COMMAND # Waiting to flush command to output
+    FLUSH_LITERAL # Waiting to flush output buffer to output
 end 
 
 """
@@ -38,27 +35,30 @@ mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     dictionary::HashMap{UInt32,Int} # 4096-element lookback history that maps 4-byte values to lookback distances
     input_buffer::ModuloBuffer{UInt8} # 49151-byte history of uncompressed input data for history copy command lookups
 
-    command_buffer::CircularBuffer{AbstractCommand} # The last command readied by the compression algorithm
+    command_buffer::CommandPair # The last command readied by the compression algorithm
     output_buffer::Vector{UInt8} # A buffer for literals that can be longer than the 49151-byte lookback limit
 
     bytes_read::Int # Number of bytes read from the raw input stream (so lookbacks have a common starting point)
     copy_start::Int # Where in the raw input stream a copy started
     copy_length::Int # How many bytes match in a history copy
+    last_literal_length::Int # The length of the last literal copied
 
     skip_trigger::Int # After 2^skip_trigger history misses, increase skip by 1
-    skip::Int # How many bytes to skip when searching for the next history match
+
+    state::MatchingState
 
     LZO1X1CompressorCodec(level::Integer=5) = new(HashMap{UInt32,Int}(
         LZO1X1_HASH_BITS,
         LZO1X1_HASH_MAGIC_NUMBER),
         ModuloBuffer{UInt8}(LZO1X1_MIN_BUFFER_SIZE), # The circular array needs a small buffer to guarantee the next bytes read can be matched
-        CircularBuffer{AbstractCommand}(1), # Only the last command (or nothing) is kept
+        NULL_COMMAND, # Only the last command (or nothing) is kept
         Vector{UInt8}(),
         0,
         0,
         0,
+        0,
         level,
-        1,
+        FIRST_LITERAL,
     )
 end
 
@@ -68,47 +68,23 @@ LZOCompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOCompressorCode
 
 function TranscodingStreams.initialize(codec::LZO1X1CompressorCodec)
     empty!(codec.input_buffer)
-    empty!(codec.command_buffer)
     empty!(codec.output_buffer)
     return
 end
 
-"""
-    state(codec)::MatchingState
-
-Determine the state of the codec from the command in the buffer.
-
-The state of the codec can be one of:
-- `FIRST_LITERAL``: in the middle of recording the first literal copy command from the input (the initial state);
-- `LITERAL`: in the middle of writing a literal copy command to the output; or
-- `HISTORY`: in the middle of writing a history copy command to the output.
-"""
-function state(codec::LZO1X1CompressorCodec)
-    if isempty(codec.command_buffer)
-        return FIRST_LITERAL
-    elseif first(codec.command_buffer) isa LiteralCopyCommand
-        return LITERAL
-    else
-        return HISTORY
-    end
-end
-
-function command(codec::LZO1X1CompressorCodec)
-    isempty(codec.command_buffer) && return nothing
-    return first(codec.command_buffer)
-end
 
 function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memory)
     # The worst-case scenario is a super-long literal, in which case the input has to be emitted in its entirety along with the output buffer
     # plus the appropriate commands to start a long literal or match and end the stream.
     # If in the middle of a history write, then the worst-case scenario is if the history copy command ends the copy and the rest of the input has to be written as a literal.
-    if state(codec) == HISTORY
+    if codec.state == HISTORY
         # CMD + HISTORY_RUN + HISTORY_REMAINDER + DISTANCE + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
-        cmd = command(codec)::HistoryCopyCommand
-        return command_length(cmd) + 1 + length(input) ÷ 255 + 1 + length(input) + 3
+        cl = command_length(codec.command_buffer)
+        return cl + 1 + length(input) ÷ 255 + 1 + length(input) + 3
     else
         # CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS + buffer
-        return 1 + length(codec.output_buffer) ÷ 255 + 1 + length(codec.output_buffer) + 1 + length(input) ÷ 255 + 1 + length(input) + 3
+        tl = length(codec.output_buffer) + length(input)
+        return 1 + tl ÷ 255 + 1 + tl + 3
     end
 end
 
@@ -122,7 +98,9 @@ function TranscodingStreams.startproc(codec::LZO1X1CompressorCodec, ::Symbol, ::
     codec.bytes_read = 0
     codec.copy_start = 0
     codec.copy_length = 0
-    codec.skip = 1
+    codec.last_literal_length = 0
+    codec.command_buffer = NULL_COMMAND
+    codec.state = FIRST_LITERAL
     return :ok
 end
 
@@ -142,37 +120,67 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     n_written = 0
     while n_read < input_length - LZO1X1_MIN_MATCH
         # Looking for the end of a copy run
-        if state(codec) == HISTORY
-            # get the last 4-byte word for faster reading from the input
-            word = reinterpret_get(UInt32, codec.input_buffer[codec.copy_start+codec.copy_length-1])
+        if codec.state == HISTORY
             while n_read < input_length - LZO1X1_MIN_MATCH
                 if input[n_read+1] == codec.input_buffer[codec.copy_start+codec.copy_length]
                     n_read += 1
                     codec.bytes_read += 1
                     push!(codec.input_buffer, input[n_read])
-                    word = reinterpret_next(word, codec.input_buffer, codec.copy_start+codec.copy_length)
-                    codec.dictionary[word] = codec.bytes_read
                     codec.copy_length += 1
                 else
-                    command = HistoryCopyCommand(codec.bytes_read - codec.copy_start, codec.copy_length, 0)
-                    push!(codec.command_buffer, command)
+                    codec.last_literal_length = codec.command_buffer.literal_length
+                    codec.command_buffer = CommandPair(false, codec.bytes_read - codec.copy_start, codec.copy_length, 0)
+                    codec.state = LITERAL
                     break
                 end
             end
         end
+
         # Looking for the end of a literal run
-        if state(codec) == LITERAL || state(codec) == FIRST_LITERAL
-            # get the next 4-byte word for faster reading from the input
-            word = reinterpret_get(UInt32, input, n_read+1)
+        if codec.state == LITERAL || codec.state == FIRST_LITERAL
             while n_read < input_length - LZO1X1_MIN_MATCH
-                
+                skip = (length(codec.output_buffer) >> codec.skip_trigger) + 1
+                word = reinterpret_get(UInt32, input, n_read+skip)
+                match_pos = replace!(codec, word, codec.bytes_read+skip)
+                if match_pos == 0 || codec.bytes_read + skip - match_pos > LZO1X1_MAX_DISTANCE || reinterpret_get(UInt32, codec.input_buffer, match_pos) != word
+                    for idx in n_read+1:n_read+skip
+                        push!(codec.input_buffer, input[idx])
+                        push!(codec.output_buffer, input[idx])
+                    end
+                    n_read += skip
+                    codec.bytes_read += skip
+                else
+                    codec.copy_start = match_pos
+                    codec.copy_length = 0
+                    codec.command_buffer.first_literal = state(codec) == FIRST_LITERAL
+                    codec.command_buffer.literal_length = length(codec.output_buffer)
+                    codec.state = FLUSH_COMMAND
+                    break
+                end
             end
         end
 
-        n_read += consume_input!(codec, input, n_read + 1)
+        if codec.state == FLUSH_COMMAND
+            w = encode!(output, codec.output_buffer, n_written+1; last_literal_length=codec.last_literal_length)
+            if w != 0
+                n_written += w
+                codec.state = FLUSH_LITERAL
+            end
+        end
 
-        # The buffer is processed and potentially data is written to output
-        n_written += compress_and_emit!(codec, output, n_written + 1)
+        # Write the literals to the output
+        if codec.state == FLUSH_LITERAL
+            w = maxcopy!(output, n_written+1, codec.output_buffer)
+            n_written += w
+            if w == length(codec.output_buffer)
+                empty!(codec.output_buffer)
+                codec.state = HISTORY
+            else
+                circshift!(codec.output_buffer, -w)
+                resize!(codec.output_buffer, length(codec.output_buffer) - w)
+            end
+        end
+
     end
 
     # We are done
@@ -183,37 +191,8 @@ end
 function TranscodingStreams.finalize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
     empty!(codec.input_buffer)
-    empty!(codec.command_buffer)
     empty!(codec.output_buffer)
     return
-end
-
-
-function find_next_match!(codec::LZO1X1CompressorCodec, input_idx::Int)
-
-    while input_idx <= codec.write_head - LZO1X1_MIN_MATCH
-        input_long = reinterpret_get(UInt32, codec.input_buffer, input_idx)
-        match_idx = replace!(codec.dictionary, input_long, input_idx)
-        if match_idx > 0 && input_idx - match_idx < LZO1X1_MAX_DISTANCE && input_long == reinterpret_get(UInt32, codec.input_buffer, match_idx)
-            return match_idx, input_idx
-        end
-        # The window jumps proportional to the number of bytes read this round
-        input_idx += ((input_idx - codec.read_head) >> LZO1X1_SKIP_TRIGGER) + 1
-    end
-    # the input_idx might have skipped beyond the write head, so clamp it
-    input_idx = min(input_idx, codec.write_head - LZO1X1_MIN_MATCH + 1)
-    return -1, input_idx
-end
-
-
-# Write a literal from `codec.output_buffer` to `output` starting at `start_index`.
-# Returns the number of bytes written to output and a status flag.
-function emit_literal!(codec::LZO1X1CompressorCodec, output::Memory, start_index::Int)
-    n_written = encode_literal_length!(codec, output, start_index)
-    len = length(codec.output_buffer)
-    unsafe_copyto!(output, start_index + n_written, codec.output_buffer, 1, len)
-    resize!(codec.output_buffer, 0)
-    return n_written + len
 end
 
 # End of stream is a copy of bytes from a distance of zero in the history
