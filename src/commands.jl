@@ -123,7 +123,7 @@ If the previous command was a long literal copy (of four of more bytes), then th
 
 See also: [`decode`](@ref) and [`encode`](@ref).
 """
-mutable struct CommandPair
+struct CommandPair
     first_literal::Bool
     lookback::Int
     copy_length::Int
@@ -134,11 +134,15 @@ const NULL_COMMAND = CommandPair(false, 0, 0, 0)
 const END_OF_STREAM_COMMAND = CommandPair(false, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0)
 
 function _validate_commands(cp::CommandPair, last_literal_length::Integer=0)
-    cp.copy_length < 2 && throw(ErrorException("history copy length ($(cp.copy_length)) not allowed"))
-    cp.lookback < 1 && throw(ErrorException("history copy lookback ($(cp.lookback)) not allowed"))
+    if !cp.first_literal 
+        cp.copy_length < 2 && throw(ErrorException("history copy length ($(cp.copy_length)) not allowed"))
+        cp.lookback < 1 && throw(ErrorException("history copy lookback ($(cp.lookback)) not allowed"))
+        cp.copy_length == 2 && (cp.lookback > 1 << 10 || last_literal_length < 1 || last_literal_length > 3) && throw(ErrorException("history copy length 2 must have a lookback ≤ $(1<<10) (got $(cp.lookback)) and last literals copied ∈ [1,3] (got $(last_literal_length))"))
+    else
+        (cp.copy_length != 0 || cp.lookback != 0) && throw(ErrorException("history copies not allowed before first literal"))
+        cp.literal_length <= MAX_SMALL_LITERAL_LENGTH && throw(ErrorException("first literal cannot copy fewer than $MAX_SMALL_LITERAL_LENGTH, got $(cp.literal_length)"))
+    end
     cp.literal_length < 0 && throw(ErrorException("literal length ($(cp.literal_length)) not allowed"))
-    cp.copy_length == 2 && (cp.lookback > 1 << 10 || cp.last_literal_length < 1 || last_literal_length > 3) && throw(ErrorException("history copy length 2 must have a lookback ≤ $(1<<10) (got $(cp.lookback)) and last literals copied ∈ [1,3] (got $(last_literal_length))"))
-    cp.first_literal && cp.literal_length <= MAX_SMALL_LITERAL_LENGTH && throw(ErrorException("first literal cannot copy fewer than $MAX_SMALL_LITERAL_LENGTH, got $(cp.literal_length)"))
 end
 
 """

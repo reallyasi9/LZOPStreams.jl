@@ -58,54 +58,77 @@ end
     end
 end
 
-@testitem "LiteralCopyCommand" begin
-    let
-        null_command = CodecLZO.LiteralCopyCommand(0)
-        @test null_command == CodecLZO.NULL_LITERAL_COMMAND
+@testitem "CommandPair command_length" begin
+    using CodecLZO: CommandPair
 
-        for n in 1:3
-            # Super-small literals can fit in the last two bits of the previous command
-            # Except if there is no previous command...
-            @test_throws ErrorException CodecLZO.LiteralCopyCommand(n; first_literal=true)
+    let 
+        # null command
+        @test_throws ErrorException CodecLZO.command_length(CodecLZO.NULL_COMMAND)
 
-            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
-            @test lcc.copy_length == n
-            @test lcc.command_length == 0
-        end
+        # small first literal
+        cp = CommandPair(true, 0, 0, 3)
+        @test_throws ErrorException CodecLZO.command_length(cp)
 
-        for n in (4,238)
-            # First literals can be compactly stored
-            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=true)
-            @test lcc.copy_length == n
-            @test lcc.command_length == 1
-        end
+        # first literal with copy command
+        cp = CommandPair(true, 100, 100, 4)
+        @test_throws ErrorException CodecLZO.command_length(cp)
 
-        for n in (239,)
-            # But only up to a point, where it reverts to the same as first_literal=false
-            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=true)
-            @test lcc == CodecLZO.LiteralCopyCommand(n; first_literal=false)
-        end
+        # negative literal length
+        cp = CommandPair(false, 100, 100, -1)
+        @test_throws ErrorException CodecLZO.command_length(cp)
 
-        for n in (4,18)
-            # The first 4 bits can carry the copy length (minus 3)
-            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
-            @test lcc.copy_length == n
-            @test lcc.command_length == 1
-        end
+        # small copy
+        cp = CommandPair(false, 100, 1, 100)
+        @test_throws ErrorException CodecLZO.command_length(cp)
 
-        for n in (19,273)
-            # If the length is longer, an additional byte stores the rest (minus 18)
-            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
-            @test lcc.copy_length == n
-            @test lcc.command_length == 2
-        end
+        # zero lookback
+        cp = CommandPair(false, 0, 100, 100)
+        @test_throws ErrorException CodecLZO.command_length(cp)
 
-        for n in (274,528)
-            # Every additional 255 bytes of length is stored as a zero byte
-            lcc = CodecLZO.LiteralCopyCommand(n; first_literal=false)
-            @test lcc.copy_length == n
-            @test lcc.command_length == 3
-        end
+        # illegal length-2 copies
+        # bad last literals
+        cp = CommandPair(false, 100, 2, 100)
+        @test_throws ErrorException CodecLZO.command_length(cp)
+        @test_throws ErrorException CodecLZO.command_length(cp, 4)
+        # lookback too long
+        cp = CommandPair(false, 1<<10 + 1, 2, 100)
+        @test_throws ErrorException CodecLZO.command_length(cp, 1)
+
+        # small first literals
+        cp = CommandPair(true, 0, 0, 4)
+        @test CodecLZO.command_length(cp) == 0 + 1
+        cp = CommandPair(true, 0, 0, 0xff - 17)
+        @test CodecLZO.command_length(cp) == 0 + 1
+
+        # longer first literals with run encoding
+        cp = CommandPair(true, 0, 0, 0xff - 16)
+        @test CodecLZO.command_length(cp) == 0 + 2
+        cp = CommandPair(true, 0, 0, 273)
+        @test CodecLZO.command_length(cp) == 0 + 2
+        cp = CommandPair(true, 0, 0, 274)
+        @test CodecLZO.command_length(cp) == 0 + 3
+
+        # length-2 copies, short literals
+        cp = CommandPair(false, 100, 2, 3)
+        @test CodecLZO.command_length(cp, 1) == 2 + 0
+        # length-2 copies, long literals
+        cp = CommandPair(false, 100, 2, 274)
+        @test CodecLZO.command_length(cp, 1) == 2 + 3
+        # length-3 copies (weird)
+        cp = CommandPair(false, 2049, 3, 274)
+        @test CodecLZO.command_length(cp, 4) == 2 + 3
+        # short, nearby copies
+        cp = CommandPair(false, 100, 8, 274)
+        @test CodecLZO.command_length(cp, 4) == 2 + 3
+
+        # longer nearby copies with run encoding
+        cp = CommandPair(false, 100, 8, 274)
+        @test CodecLZO.command_length(cp, 4) == 2 + 3
+
+        # longer long-distance copies with run encoding
+        cp = CommandPair(false, 100, 8, 274)
+        @test CodecLZO.command_length(cp, 4) == 2 + 3
+        
     end
 end
 
