@@ -59,100 +59,309 @@ end
 end
 
 @testitem "CommandPair command_length" begin
-    using CodecLZO: CommandPair
+    using CodecLZO: CommandPair, command_length
 
     let 
         # null command
-        @test_throws ErrorException CodecLZO.command_length(CodecLZO.NULL_COMMAND)
+        @test_throws ErrorException command_length(CodecLZO.NULL_COMMAND)
 
         # small first literal
-        cp = CommandPair(true, 0, 0, 3)
-        @test_throws ErrorException CodecLZO.command_length(cp)
+        cp = CommandPair(true, 0, 0, 0)
+        @test_throws ErrorException command_length(cp)
 
         # first literal with copy command
         cp = CommandPair(true, 100, 100, 4)
-        @test_throws ErrorException CodecLZO.command_length(cp)
+        @test_throws ErrorException command_length(cp)
 
         # negative literal length
         cp = CommandPair(false, 100, 100, -1)
-        @test_throws ErrorException CodecLZO.command_length(cp)
+        @test_throws ErrorException command_length(cp)
 
         # small copy
         cp = CommandPair(false, 100, 1, 100)
-        @test_throws ErrorException CodecLZO.command_length(cp)
+        @test_throws ErrorException command_length(cp)
 
         # zero lookback
         cp = CommandPair(false, 0, 100, 100)
-        @test_throws ErrorException CodecLZO.command_length(cp)
+        @test_throws ErrorException command_length(cp)
 
         # illegal length-2 copies
         # bad last literals
         cp = CommandPair(false, 100, 2, 100)
-        @test_throws ErrorException CodecLZO.command_length(cp)
-        @test_throws ErrorException CodecLZO.command_length(cp, 4)
+        @test_throws ErrorException command_length(cp)
+        @test_throws ErrorException command_length(cp, 4)
         # lookback too long
         cp = CommandPair(false, 1<<10 + 1, 2, 100)
-        @test_throws ErrorException CodecLZO.command_length(cp, 1)
+        @test_throws ErrorException command_length(cp, 1)
 
         # small first literals
         cp = CommandPair(true, 0, 0, 4)
-        @test CodecLZO.command_length(cp) == 0 + 1
+        @test command_length(cp) == 0 + 1
         cp = CommandPair(true, 0, 0, 0xff - 17)
-        @test CodecLZO.command_length(cp) == 0 + 1
+        @test command_length(cp) == 0 + 1
 
         # longer first literals with run encoding
         cp = CommandPair(true, 0, 0, 0xff - 16)
-        @test CodecLZO.command_length(cp) == 0 + 2
+        @test command_length(cp) == 0 + 2
         cp = CommandPair(true, 0, 0, 273)
-        @test CodecLZO.command_length(cp) == 0 + 2
+        @test command_length(cp) == 0 + 2
         cp = CommandPair(true, 0, 0, 274)
-        @test CodecLZO.command_length(cp) == 0 + 3
+        @test command_length(cp) == 0 + 3
 
         # length-2 copies, short literals
         cp = CommandPair(false, 100, 2, 3)
-        @test CodecLZO.command_length(cp, 1) == 2 + 0
+        @test command_length(cp, 1) == 2 + 0
         # length-2 copies, long literals
         cp = CommandPair(false, 100, 2, 274)
-        @test CodecLZO.command_length(cp, 1) == 2 + 3
+        @test command_length(cp, 1) == 2 + 3
         # length-3 copies (weird)
         cp = CommandPair(false, 2049, 3, 274)
-        @test CodecLZO.command_length(cp, 4) == 2 + 3
+        @test command_length(cp, 4) == 2 + 3
         # short, nearby copies
         cp = CommandPair(false, 100, 8, 274)
-        @test CodecLZO.command_length(cp, 4) == 2 + 3
+        @test command_length(cp, 4) == 2 + 3
+        # short, nearby copies with run-encoded longer literals
+        cp = CommandPair(false, 100, 8, 18)
+        @test command_length(cp, 4) == 2 + 1
+        cp = CommandPair(false, 100, 8, 19)
+        @test command_length(cp, 4) == 2 + 2
+        cp = CommandPair(false, 100, 8, 19)
+        @test command_length(cp, 4) == 2 + 2
+        cp = CommandPair(false, 100, 8, 273)
+        @test command_length(cp, 4) == 2 + 2
+        cp = CommandPair(false, 100, 8, 274)
+        @test command_length(cp, 4) == 2 + 3
 
         # longer nearby copies with run encoding
-        cp = CommandPair(false, 100, 8, 274)
-        @test CodecLZO.command_length(cp, 4) == 2 + 3
+        cp = CommandPair(false, 1 << 11 + 1, 33, 274)
+        @test command_length(cp, 4) == 3 + 3
+        cp = CommandPair(false, 1 << 11 + 1, 34, 274)
+        @test command_length(cp, 4) == 4 + 3
 
         # longer long-distance copies with run encoding
-        cp = CommandPair(false, 100, 8, 274)
-        @test CodecLZO.command_length(cp, 4) == 2 + 3
+        cp = CommandPair(false, 1 << 14 + 1, 9, 274)
+        @test command_length(cp, 4) == 3 + 3
+        cp = CommandPair(false, 1 << 14 + 1, 10, 274)
+        @test command_length(cp, 4) == 4 + 3
         
     end
 end
 
-@testitem "decode LiteralCopyCommand" begin
+@testitem "CopyCommand encode" begin
+    using CodecLZO: CommandPair, encode!, encode_literal_copy!, encode_history_copy!
+
     let
-        # Valid first literals
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[17]) == CodecLZO.LiteralCopyCommand(1,0)
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[255]) == CodecLZO.LiteralCopyCommand(1,238)
+        # No space to write
+        data = UInt8[]
+        c = CommandPair(true, 0, 0, 4)
+        @test encode_literal_copy!(data, c, 1) == 0
+        @test encode!(data, c, 1) == 0
 
-        # Invalid first literal
-        @test_throws ErrorException CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[16])
+        # valid first literals
+        resize!(data, 2)
+        c = CommandPair(true, 0, 0, 4)
+        @test encode_literal_copy!(data, c, 1) == 1
+        @test encode!(data, c, 1) == 1
+        @test data[1:1] == UInt8[0b00010101]
 
-        # Long literals
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000001]) == CodecLZO.LiteralCopyCommand(1,4)
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00001111]) == CodecLZO.LiteralCopyCommand(1,18)
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000,0b00000001]) == CodecLZO.LiteralCopyCommand(2,19)
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000,0b11111111]) == CodecLZO.LiteralCopyCommand(2,273)
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000,0b00000000,0b00000001]) == CodecLZO.LiteralCopyCommand(3,274)
+        # offset
+        fill!(data, zero(UInt8))
+        @test encode_literal_copy!(data, c, 2) == 1
+        @test encode!(data, c, 2) == 1
+        @test data[1:2] == UInt8[0b00000000, 0b00010101]
 
-        # Broken literals
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000]) == CodecLZO.NULL_LITERAL_COMMAND
+        c = CommandPair(true, 0, 0, 238)
+        @test encode_literal_copy!(data, c, 1) == 1
+        @test encode!(data, c, 1) == 1
+        @test data[1:1] == UInt8[0b11111111]
 
-        # Broken run length
-        @test CodecLZO.decode(CodecLZO.LiteralCopyCommand, UInt8[0b00000000,0b00000000]) == CodecLZO.NULL_LITERAL_COMMAND
+        # Run-encoded first literal
+        c = CommandPair(true, 0, 0, 239)
+        @test encode_literal_copy!(data, c, 1) == 2
+        @test encode!(data, c, 1) == 2
+        @test data[1:2] == UInt8[0b00000000, 0b11011101]
+        c = CommandPair(true, 0, 0, 273)
+        @test encode_literal_copy!(data, c, 1) == 2
+        @test encode!(data, c, 1) == 2
+        @test data[1:2] == UInt8[0b00000000, 0b11111111]
+
+        # No space to write
+        c = CommandPair(true, 0, 0, 274)
+        @test encode_literal_copy!(data, c, 1) == 0
+        @test encode!(data, c, 1) == 0
+
+        # Still no space due to start offset
+        resize!(data, 3)
+        @test encode_literal_copy!(data, c, 2) == 0
+        @test encode!(data, c, 2) == 0
+
+        # Finally, space to write!
+        @test encode_literal_copy!(data, c, 1) == 3
+        @test encode!(data, c, 1) == 3
+        @test data[1:3] == UInt8[0b00000000, 0b00000000, 0b00000001]
+
+        # length-2 copy with short literal
+        c = CommandPair(false, 1, 2, 3)
+        @test encode_history_copy!(data, c, 1, 1) == 2
+        @test data[1:2] == UInt8[0b00000011, 0b00000000]
+        @test encode!(data, c, 1; last_literal_length=1) == 2
+        @test data[1:2] == UInt8[0b00000011, 0b00000000]
+
+        # length-2 copy with long literal
+        c = CommandPair(false, 1024, 2, 4)
+        @test encode_history_copy!(data, c, 1, 1) == 2
+        @test data[1:2] == UInt8[0b00001100, 0b11111111]
+        @test encode!(data, c, 1; last_literal_length=1) == 3
+        @test data[1:3] == UInt8[0b00001100, 0b11111111, 0b00000001]
+
+        # length-2 copy with invalid last literals
+        @test_throws ErrorException encode_history_copy!(data, c, 1, 0)
+        @test_throws ErrorException encode!(data, c, 1; last_literal_length=0)
+        @test_throws ErrorException encode_history_copy!(data, c, 1, 4)
+        @test_throws ErrorException encode!(data, c, 1; last_literal_length=4)
+
+        # length-2 copy with too long a lookback
+        c = CommandPair(false, 1025, 2, 4)
+        @test_throws ErrorException encode_history_copy!(data, c, 1, 1)
+        @test_throws ErrorException encode!(data, c, 1; last_literal_length=1)
+
+        # length-3 short-distance copy with short literal
+        c = CommandPair(false, 1, 3, 3)
+        @test encode_history_copy!(data, c, 1, 0) == 2
+        @test data[1:2] == UInt8[0b01000011, 0b00000000]
+        @test encode!(data, c, 1) == 2
+        @test data[1:2] == UInt8[0b01000011, 0b00000000]
+
+        # length-3 short-distance copy with long literal
+        c = CommandPair(false, 2048, 3, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 2
+        @test data[1:2] == UInt8[0b01011100, 0b11111111]
+        @test encode!(data, c, 1) == 3
+        @test data[1:3] == UInt8[0b01011100, 0b11111111, 0b00000001]
+
+        # length-3 medium-distance copy with short literal
+        c = CommandPair(false, 2049, 3, 3)
+        @test encode_history_copy!(data, c, 1, 4) == 2
+        @test data[1:2] == UInt8[0b00000011, 0b00000000]
+        @test encode!(data, c, 1; last_literal_length=4) == 2
+        @test data[1:2] == UInt8[0b00000011, 0b00000000]
+
+        # length-3 medium-distance copy with long literal
+        c = CommandPair(false, 3072, 3, 4)
+        @test encode_history_copy!(data, c, 1, 4) == 2
+        @test data[1:2] == UInt8[0b00001100, 0b11111111]
+        @test encode!(data, c, 1; last_literal_length=4) == 3
+        @test data[1:3] == UInt8[0b00001100, 0b11111111, 0b00000001]
+
+        # length-3 medium-distance copy with invalid last literal
+        resize!(data, 4)
+        c = CommandPair(false, 3072, 3, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 3
+        @test data[1:3] == UInt8[0b00100001, 0b11111100, 0b00101111]
+        @test encode!(data, c, 1; last_literal_length=0) == 4
+        @test data[1:4] == UInt8[0b00100001, 0b11111100, 0b00101111, 0b00000001]
+
+        # length-4 copy with short literal
+        c = CommandPair(false, 1, 4, 3)
+        @test encode_history_copy!(data, c, 1, 0) == 2
+        @test data[1:2] == UInt8[0b01100011, 0b00000000]
+        @test encode!(data, c, 1) == 2
+        @test data[1:2] == UInt8[0b01100011, 0b00000000]
+
+        # length-4 copy with long literal
+        c = CommandPair(false, 2048, 4, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 2
+        @test data[1:2] == UInt8[0b01111100, 0b11111111]
+        @test encode!(data, c, 1) == 3
+        @test data[1:3] == UInt8[0b01111100, 0b11111111, 0b00000001]
+
+        # length-4 copy with long lookback
+        c = CommandPair(false, 2049, 4, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 3
+        @test data[1:3] == UInt8[0b00100010, 0b00000000, 0b00100000]
+        @test encode!(data, c, 1) == 4
+        @test data[1:4] == UInt8[0b00100010, 0b00000000, 0b00100000, 0b00000001]
+
+        # length-5-8 copy with short literal
+        c = CommandPair(false, 1, 5, 3)
+        @test encode_history_copy!(data, c, 1, 0) == 2
+        @test data[1:2] == UInt8[0b10000011, 0b00000000]
+        @test encode!(data, c, 1) == 2
+        @test data[1:2] == UInt8[0b10000011, 0b00000000]
+
+        # length-5-8 copy with long literal
+        c = CommandPair(false, 2048, 8, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 2
+        @test data[1:2] == UInt8[0b11111100, 0b11111111]
+        @test encode!(data, c, 1) == 3
+        @test data[1:3] == UInt8[0b11111100, 0b11111111, 0b00000001]
+
+        # length-5-8 copy with long lookback
+        c = CommandPair(false, 2049, 8, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 3
+        @test data[1:3] == UInt8[0b00100110, 0b00000000, 0b00100000]
+        @test encode!(data, c, 1) == 4
+        @test data[1:4] == UInt8[0b00100110, 0b00000000, 0b00100000, 0b00000001]
+
+        # short lookback with short literal
+        c = CommandPair(false, 1, 9, 1)
+        @test encode_history_copy!(data, c, 1, 0) == 3
+        @test data[1:3] == UInt8[0b00100111, 0b00000001, 0b00000000]
+        @test encode!(data, c, 1) == 3
+        @test data[1:3] == UInt8[0b00100111, 0b00000001, 0b00000000]
+
+        # short lookback with short literal and run-encoded length
+        c = CommandPair(false, 1, 34, 3)
+        @test encode_history_copy!(data, c, 1, 0) == 4
+        @test data[1:4] == UInt8[0b00100000, 0b00000001, 0b00000011, 0b00000000]
+        @test encode!(data, c, 1) == 4
+        @test data[1:4] == UInt8[0b00100000, 0b00000001, 0b00000011, 0b00000000]
+
+        # short lookback with long literal and run-encoded length
+        resize!(data, 6)
+        c = CommandPair(false, 16384, 289, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 5
+        @test data[1:5] == UInt8[0b00100000, 0b00000000, 0b00000001, 0b11111100, 0b11111111]
+        @test encode!(data, c, 1) == 6
+        @test data[1:6] == UInt8[0b00100000, 0b00000000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
+
+        # long lookback with short literal
+        c = CommandPair(false, 16385, 3, 1)
+        @test encode_history_copy!(data, c, 1, 0) == 3
+        @test data[1:3] == UInt8[0b00010001, 0b00000101, 0b00000000]
+        @test encode!(data, c, 1) == 3
+        @test data[1:3] == UInt8[0b00010001, 0b00000101, 0b00000000]
+
+        # long lookback with short literal and run-encoded length
+        c = CommandPair(false, 16385, 10, 3)
+        @test encode_history_copy!(data, c, 1, 0) == 4
+        @test data[1:4] == UInt8[0b00010000, 0b00000001, 0b00000111, 0b00000000]
+        @test encode!(data, c, 1) == 4
+        @test data[1:4] == UInt8[0b00010000, 0b00000001, 0b00000111, 0b00000000]
+
+        # long lookback with long literal and run-encoded length
+        c = CommandPair(false, 49151, 10, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 4
+        @test data[1:4] == UInt8[0b00011000, 0b00000001, 0b11111100, 0b11111111]
+        @test encode!(data, c, 1) == 5
+        @test data[1:5] == UInt8[0b00011000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
+
+        # long lookback, run-encoded literal, run-encoded length (as big as it gets!)
+        c = CommandPair(false, 49151, 265, 4)
+        @test encode_history_copy!(data, c, 1, 0) == 5
+        @test data[1:5] == UInt8[0b00011000, 0b00000000, 0b00000001, 0b11111100, 0b11111111]
+        @test encode!(data, c, 1) == 6
+        @test data[1:6] == UInt8[0b00011000, 0b00000000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
+
+        # too long a lookback
+        c = CommandPair(false, 49152, 265, 4)
+        @test_throws ErrorException encode_history_copy!(data, c, 1, 0)
+
+        # EOS-lookalike
+        c = CommandPair(false, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
+        @test encode_history_copy!(data, c, 1, 0) == 3
+        @test data[1:3] == UInt8[0b00100001, 0b00000000, 0b00000000]
+
     end
 end
 

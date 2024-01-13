@@ -21,12 +21,12 @@ In LZO1X, literal copies come in three varieties:
 
 LZO1X long copy commands begin with a byte with four high zero bits and four low potentially non-zero bits:
 
-    0 0 0 0 L L L L
+    `0000LLLL [Z zero bytes] [XXXXXXXX]`
 
 The low four bits represent the length of the copy _minus three_. This can obviously only represent copies of length 3 to 18, so to encode longer copies, LZO1X uses the following encoding method:
 
 1. If the first byte is non-zero, then `length = 3 + L`
-2. If the first byte is zero, then `length = 18 + (number of zero bytes after the first) × 255 + (first non-zero byte)`
+2. If the first byte is zero, then `length = 18 + Z × 255 + 0bXXXXXXXX`
 
 This means a length of 18 is encoded as `[0b00001111]`, a length of 19 is encoded as `[0b00000000, 0b00000001]`, a length of 274 is encoded as `[0b00000000, 0b00000000, 0b00000001]`, and so on.
 
@@ -41,10 +41,10 @@ LZO1X streams always begin with a literal copy command of at least four bytes. B
 - `0:15`: Treat as a "long copy" encoding (see above).
 - `17:255`: Treat as a copy of `(byte - 17)` literals.
 
-Note that `17:20` are invalid values for a first copy command in LZO1X streams because history lookback copy lengths must always be four or more bytes. A value of `16` in the first position is always invalid.
+Note that `17:20` are technically invalid values for a first copy command in LZO1X streams because history lookback copy lengths must always be four or more bytes. A value of `16` in the first position is _always_ invalid because it signals a history lookback copy command, which cannot come before any literals are copied to the output.
 
 !!! note
-    The official `liblzo2` version of LZO1X properly _decodes_ these first literal copy codes, but never _encodes_ them when compressing data.
+    The official `liblzo2` version of LZO1X properly _decodes_ these first literal copy codes, but never _encodes_ them when compressing data. This is likely because the first literal copy codes only save at most one byte in the output stream (if the number of bytes to copy is `∈ 19:272`).
 
 # History lookback copies
 
@@ -79,7 +79,7 @@ Copies of any length greater than two with a lookback distance within 16384 byte
 The lower five bits of the first byte represent the length of the copy _minus two_. This can obviously only represent copies of length 2 to 33, so to encode longer copies, LZO1X uses the following encoding method:
 
 1. If `0bLLLLL` is non-zero, then `length = 2 + 0bLLLLL`
-2. If `0bLLLLL` is zero, then `length = 33 + (number of zero bytes after the first) × 255 + (first non-zero byte)`
+2. If `0bLLLLL` is zero, then `length = 33 + Z × 255 + 0bXXXXXXXX`
 
 The lookback distance is encoded in LE order in the last two bytes: that is, the last byte of the command holds the MSB of the distance, and the second-to-last byte holds the LSB of the distance. The distance is interpreted as `distance = 0b00DDDDDD_DDEEEEEE + 1`.
 
@@ -94,14 +94,14 @@ Copies of any length greater than two with a lookback distance between 16385 and
 As with other variable length runs,, LZO1X uses the following encoding method with this command:
 
 1. If `0bLLL` is non-zero, then `length = 2 + 0bLLL`
-2. If `0bLLL` is zero, then `length = 9 + (number of zero bytes after the first) × 255 + (first non-zero byte)`
+2. If `0bLLL` is zero, then `length = 9 + Z × 255 + 0bXXXXXXXX`
 
 The lookback distance is encoded with one bit in the first command byte (`H`), then in LE order in the last two bytes: that is, the last byte of the command holds the MSB of the distance, and the second-to-last byte holds the LSB of the distance. The distance is interpreted as `distance = 16384 + 0b0HDDDDDD_DDEEEEEE`.
 
 The last two bits of the second-to-last byte instruct the decoder to copy `0bSS` literals from the input to the output immediately following the history lookback copy.
 
 !!! info "Special End-of-Stream Encoding"
-    End-of-stream is signaled by a history lookback copy of 3 bytes from a distance of 16384 bytes with no subsequent literal copies. This corresponds to a long historical lookback copy command of `0b00010001 0b00000000 0b00000000`.
+    End-of-stream is signaled by a history lookback copy of 3 bytes from a distance of 16384 bytes with no subsequent literal copies. This corresponds to two possible commands, so by convention the end-of-stream command uses the long distance version (`0b00010001 0b00000000 0b00000000`) while an actual copy of 3 bytes from a distance of 16384 uses the short distance version (`0b00100001 0b00000000 0b00000000`).
 
 !!! note
     The maximum lookback distance that LZO1X can encode is `16384 + 0b01111111_11111111 == 49151` bytes.
@@ -116,7 +116,7 @@ The number of bytes to copy is always `length = 2`, and the lookback distance is
 
 The last two bits of the first byte instruct the decoder to copy `0bSS` literals from the input to the output immediately following the history lookback copy.
 
-If the previous command was a long literal copy (of four of more bytes), then the same two-byte command means something different: it encodes a three-byte copy with a lookback distance between 2049 and 3071 bytes. The command is interpreted the same as above, but `length = 3` and `distance = 0b000000HH_HHHHHHDD + 2049`.
+If the previous command was a long literal copy (of four of more bytes), then the same two-byte command means something different: it encodes a three-byte copy with a lookback distance between 2049 and 3072 bytes. The command is interpreted the same as above, but `length = 3` and `distance = 0b000000HH_HHHHHHDD + 2049`.
 
 !!! note
     Because encoding these special commands require a historical match of fewer than four bytes, they are never _encoded_ by the LZO1X algorithm: however, they are valid LZO1X commands, and the LZO1X _decoder_ will interpret them correctly.
@@ -131,7 +131,7 @@ struct CommandPair
 end
 
 const NULL_COMMAND = CommandPair(false, 0, 0, 0)
-const END_OF_STREAM_COMMAND = CommandPair(false, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0)
+const END_OF_STREAM_DATA = UInt8[0b00010000, 0b00000000, 0b00000000]
 
 function _validate_commands(cp::CommandPair, last_literal_length::Integer=0)
     if !cp.first_literal 
@@ -140,7 +140,7 @@ function _validate_commands(cp::CommandPair, last_literal_length::Integer=0)
         cp.copy_length == 2 && (cp.lookback > 1 << 10 || last_literal_length < 1 || last_literal_length > 3) && throw(ErrorException("history copy length 2 must have a lookback ≤ $(1<<10) (got $(cp.lookback)) and last literals copied ∈ [1,3] (got $(last_literal_length))"))
     else
         (cp.copy_length != 0 || cp.lookback != 0) && throw(ErrorException("history copies not allowed before first literal"))
-        cp.literal_length <= MAX_SMALL_LITERAL_LENGTH && throw(ErrorException("first literal cannot copy fewer than $MAX_SMALL_LITERAL_LENGTH, got $(cp.literal_length)"))
+        cp.literal_length < LZO1X1_MIN_MATCH && throw(ErrorException("first literal cannot copy fewer than $LZO1X1_MIN_MATCH bytes, got $(cp.literal_length)"))
     end
     cp.literal_length < 0 && throw(ErrorException("literal length ($(cp.literal_length)) not allowed"))
 end
@@ -219,7 +219,7 @@ function encode_run!(output, len::Integer, bits::Integer, start_index::Integer=1
         n_zeros -= 1
     end
     
-    remaining_bytes < n_zeros + 1 && return 0
+    remaining_bytes < n_zeros + 2 && return 0
 
     output[start_index] = zero(UInt8) # clear the bits just in case
     for j in 1:n_zeros
@@ -292,13 +292,18 @@ function compute_run_remainder(n::Integer, bits::Integer)
     end
 end
 
+function is_eos(c::CommandPair)
+    return !c.first_literal && c.lookback == END_OF_STREAM_LOOKBACK && c.copy_length == END_OF_STREAM_COPY_LENGTH && c.literal_length == 0
+end
+
 function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_literal::Bool = false, last_literal_length::Integer = 0)
     if !first_literal
+        if first(data, 3) == END_OF_STREAM_DATA
+            return 3, END_OF_STREAM_COMMAND
+        end
         n_read, lookback, copy_length, post_copy_literals = decode_history_copy(data, start_index, last_literal_length)
         if lookback == 0
             return 0, NULL_COMMAND
-        elseif lookback == END_OF_STREAM_LOOKBACK && copy_length == END_OF_STREAM_COPY_LENGTH
-            return n_read, END_OF_STREAM_COMMAND
         end
     else
         n_read = lookback = copy_length = post_copy_literals = 0
@@ -389,7 +394,7 @@ end
 
 
 function encode!(data, cp::CommandPair, start_index::Integer=1; last_literal_length::Integer=0)
-    _validate_commands(cp)
+    _validate_commands(cp, last_literal_length)
     n_written = 0
     if !cp.first_literal
         n_written += encode_history_copy!(data, cp, start_index, last_literal_length)
@@ -401,7 +406,7 @@ end
 function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_literal_length::Integer)
     remaining_bytes = lastindex(data) - start_index + 1
 
-    if cp.lookback == END_OF_STREAM_LOOKBACK && cp.copy_length == END_OF_STREAM_COPY_LENGTH
+    if is_eos(cp)
         remaining_bytes < 3 && return 0
         data[start_index] = UInt8(0b00010001)
         data[start_index + 1] = zero(UInt8)
@@ -435,7 +440,7 @@ function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_
         data[start_index] = (D << 2) | S
         data[start_index+1] = H
         return 2
-    elseif 3 <= cp.copy_length <= 4 && cp.lookback < 2049
+    elseif 3 <= cp.copy_length <= 4 && cp.lookback <= 2048
         remaining_bytes < 2 && return 0
         # 0b01LDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
         distance = cp.lookback - 1
@@ -445,7 +450,7 @@ function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_
         data[start_index] = 0b01000000 | (L << 5) | (D << 2) | S
         data[start_index+1] = H
         return 2
-    elseif 5 <= cp.copy_length <= 8 && cp.lookback <= 2049
+    elseif 5 <= cp.copy_length <= 8 && cp.lookback <= 2048
         remaining_bytes < 2 && return 0
         # 0b1LLDDDSS_HHHHHHHH, distance = (H << 3) + D + 1
         distance = cp.lookback - 1
@@ -466,14 +471,16 @@ function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_
             n_written = encode_run!(data, cp.copy_length - 2, SHORT_DISTANCE_HISTORY_MASK_BITS, start_index)
             data[start_index] |= 0b00100000
             distance -= 1
-        else
+        elseif distance <= LZO1X1_MAX_DISTANCE
             # 0b0001HLLL_*_DDDDDDSS_DDDDDDDD, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
-            n_written = encode_run!(data, c.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
+            n_written = encode_run!(data, cp.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
             data[start_index] |= 0b00010000
             distance -= 16384
             H = UInt8((distance >> 14) & 1)
             data[start_index] |= H << 3
+        else
+            throw(ErrorException("history copy command can only encode lookback <= $LZO1X1_MAX_DISTANCE, got $distance"))
         end
         n_written == 0 && return 0
         remaining_bytes < 2 + n_written && return 0
@@ -497,7 +504,6 @@ function encode_literal_copy!(data, cp::CommandPair, start_index::Integer)
             data[start_index] = (cp.literal_length+17) % UInt8
             return 1
         else
-            data[start_index] = zero(UInt8)
             return encode_run!(data, cp.literal_length - 3, LITERAL_MASK_BITS, start_index)
         end
     end
@@ -509,6 +515,5 @@ function encode_literal_copy!(data, cp::CommandPair, start_index::Integer)
     end
 
     # everything else is encoded raw or as a run of unary zeros plus a remainder
-    data[start_index] = zero(UInt8)
-    return encode_run!(data, c.copy_length - 3, LITERAL_MASK_BITS, start_index)
+    return encode_run!(data, cp.literal_length - 3, LITERAL_MASK_BITS, start_index)
 end
