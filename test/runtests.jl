@@ -1,7 +1,7 @@
 using CodecLZO
 using TestItemRunner
 
-@testitem "HashMap" begin
+@testitem "HashMap setindex!, getindex, replace!, and empty!" begin
     h = CodecLZO.HashMap{UInt8,Int}(8, UInt8(2^8 - 45)) # that's prime
     @test h[0x01] == 0
     h[0x01] = 1
@@ -9,6 +9,9 @@ using TestItemRunner
     # overwrite
     h[0x01] = 2
     @test h[0x01] == 2
+    # replace
+    @test replace!(h, 0x01, 3) == 2
+    @test h[0x01] == 3
     # empty
     empty!(h)
     @test h[0x01] == 0
@@ -66,100 +69,122 @@ end
         @test_throws ErrorException command_length(CodecLZO.NULL_COMMAND)
 
         # small first literal
-        cp = CommandPair(true, 0, 0, 0)
+        cp = CommandPair(true, false, 0, 0, 0)
         @test_throws ErrorException command_length(cp)
 
         # first literal with copy command
-        cp = CommandPair(true, 100, 100, 4)
+        cp = CommandPair(true, false, 100, 100, 4)
         @test_throws ErrorException command_length(cp)
 
         # negative literal length
-        cp = CommandPair(false, 100, 100, -1)
+        cp = CommandPair(false, false, 100, 100, -1)
         @test_throws ErrorException command_length(cp)
 
         # small copy
-        cp = CommandPair(false, 100, 1, 100)
+        cp = CommandPair(false, false, 100, 1, 100)
         @test_throws ErrorException command_length(cp)
 
         # zero lookback
-        cp = CommandPair(false, 0, 100, 100)
+        cp = CommandPair(false, false, 0, 100, 100)
         @test_throws ErrorException command_length(cp)
 
         # illegal length-2 copies
         # bad last literals
-        cp = CommandPair(false, 100, 2, 100)
+        cp = CommandPair(false, false, 100, 2, 100)
         @test_throws ErrorException command_length(cp)
         @test_throws ErrorException command_length(cp, 4)
         # lookback too long
-        cp = CommandPair(false, 1<<10 + 1, 2, 100)
+        cp = CommandPair(false, false, 1<<10 + 1, 2, 100)
         @test_throws ErrorException command_length(cp, 1)
 
         # small first literals
-        cp = CommandPair(true, 0, 0, 4)
+        cp = CommandPair(true, false, 0, 0, 4)
         @test command_length(cp) == 0 + 1
-        cp = CommandPair(true, 0, 0, 0xff - 17)
+        cp = CommandPair(true, false, 0, 0, 0xff - 17)
         @test command_length(cp) == 0 + 1
 
         # longer first literals with run encoding
-        cp = CommandPair(true, 0, 0, 0xff - 16)
+        cp = CommandPair(true, false, 0, 0, 0xff - 16)
         @test command_length(cp) == 0 + 2
-        cp = CommandPair(true, 0, 0, 273)
+        cp = CommandPair(true, false, 0, 0, 273)
         @test command_length(cp) == 0 + 2
-        cp = CommandPair(true, 0, 0, 274)
+        cp = CommandPair(true, false, 0, 0, 274)
         @test command_length(cp) == 0 + 3
 
         # length-2 copies, short literals
-        cp = CommandPair(false, 100, 2, 3)
+        cp = CommandPair(false, false, 100, 2, 3)
         @test command_length(cp, 1) == 2 + 0
         # length-2 copies, long literals
-        cp = CommandPair(false, 100, 2, 274)
+        cp = CommandPair(false, false, 100, 2, 274)
         @test command_length(cp, 1) == 2 + 3
         # length-3 copies (weird)
-        cp = CommandPair(false, 2049, 3, 274)
+        cp = CommandPair(false, false, 2049, 3, 274)
         @test command_length(cp, 4) == 2 + 3
         # short, nearby copies
-        cp = CommandPair(false, 100, 8, 274)
+        cp = CommandPair(false, false, 100, 8, 274)
         @test command_length(cp, 4) == 2 + 3
         # short, nearby copies with run-encoded longer literals
-        cp = CommandPair(false, 100, 8, 18)
+        cp = CommandPair(false, false, 100, 8, 18)
         @test command_length(cp, 4) == 2 + 1
-        cp = CommandPair(false, 100, 8, 19)
+        cp = CommandPair(false, false, 100, 8, 19)
         @test command_length(cp, 4) == 2 + 2
-        cp = CommandPair(false, 100, 8, 19)
+        cp = CommandPair(false, false, 100, 8, 19)
         @test command_length(cp, 4) == 2 + 2
-        cp = CommandPair(false, 100, 8, 273)
+        cp = CommandPair(false, false, 100, 8, 273)
         @test command_length(cp, 4) == 2 + 2
-        cp = CommandPair(false, 100, 8, 274)
+        cp = CommandPair(false, false, 100, 8, 274)
         @test command_length(cp, 4) == 2 + 3
 
         # longer nearby copies with run encoding
-        cp = CommandPair(false, 1 << 11 + 1, 33, 274)
+        cp = CommandPair(false, false, 1 << 11 + 1, 33, 274)
         @test command_length(cp, 4) == 3 + 3
-        cp = CommandPair(false, 1 << 11 + 1, 34, 274)
+        cp = CommandPair(false, false, 1 << 11 + 1, 34, 274)
         @test command_length(cp, 4) == 4 + 3
 
         # longer long-distance copies with run encoding
-        cp = CommandPair(false, 1 << 14 + 1, 9, 274)
+        cp = CommandPair(false, false, 1 << 14 + 1, 9, 274)
         @test command_length(cp, 4) == 3 + 3
-        cp = CommandPair(false, 1 << 14 + 1, 10, 274)
+        cp = CommandPair(false, false, 1 << 14 + 1, 10, 274)
         @test command_length(cp, 4) == 4 + 3
-        
+
+        # EOS
+        cp = CodecLZO.END_OF_STREAM_COMMAND
+        @test command_length(cp) == 3
+
+        # EOS Lookalike
+        cp = CommandPair(false, false, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
+        @test command_length(cp) == 3
+
+        # Bad EOS
+        # first literal
+        cp = CommandPair(true, true, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
+        @test_throws ErrorException command_length(cp)
+        # bad lookback
+        cp = CommandPair(false, true, CodecLZO.END_OF_STREAM_LOOKBACK + 1, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
+        @test_throws ErrorException command_length(cp)
+        # bad copy length
+        cp = CommandPair(false, true, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH+1, 0)
+        @test_throws ErrorException command_length(cp)
+        # post-copy literals
+        cp = CommandPair(false, true, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 1)
+        @test_throws ErrorException command_length(cp)
+
     end
 end
 
-@testitem "CopyCommand encode" begin
+@testitem "CommandPair encode" begin
     using CodecLZO: CommandPair, encode!, encode_literal_copy!, encode_history_copy!
 
     let
         # No space to write
         data = UInt8[]
-        c = CommandPair(true, 0, 0, 4)
+        c = CommandPair(true, false, 0, 0, 4)
         @test encode_literal_copy!(data, c, 1) == 0
         @test encode!(data, c, 1) == 0
 
         # valid first literals
         resize!(data, 2)
-        c = CommandPair(true, 0, 0, 4)
+        c = CommandPair(true, false, 0, 0, 4)
         @test encode_literal_copy!(data, c, 1) == 1
         @test encode!(data, c, 1) == 1
         @test data[1:1] == UInt8[0b00010101]
@@ -170,23 +195,23 @@ end
         @test encode!(data, c, 2) == 1
         @test data[1:2] == UInt8[0b00000000, 0b00010101]
 
-        c = CommandPair(true, 0, 0, 238)
+        c = CommandPair(true, false, 0, 0, 238)
         @test encode_literal_copy!(data, c, 1) == 1
         @test encode!(data, c, 1) == 1
         @test data[1:1] == UInt8[0b11111111]
 
         # Run-encoded first literal
-        c = CommandPair(true, 0, 0, 239)
+        c = CommandPair(true, false, 0, 0, 239)
         @test encode_literal_copy!(data, c, 1) == 2
         @test encode!(data, c, 1) == 2
         @test data[1:2] == UInt8[0b00000000, 0b11011101]
-        c = CommandPair(true, 0, 0, 273)
+        c = CommandPair(true, false, 0, 0, 273)
         @test encode_literal_copy!(data, c, 1) == 2
         @test encode!(data, c, 1) == 2
         @test data[1:2] == UInt8[0b00000000, 0b11111111]
 
         # No space to write
-        c = CommandPair(true, 0, 0, 274)
+        c = CommandPair(true, false, 0, 0, 274)
         @test encode_literal_copy!(data, c, 1) == 0
         @test encode!(data, c, 1) == 0
 
@@ -201,14 +226,14 @@ end
         @test data[1:3] == UInt8[0b00000000, 0b00000000, 0b00000001]
 
         # length-2 copy with short literal
-        c = CommandPair(false, 1, 2, 3)
+        c = CommandPair(false, false, 1, 2, 3)
         @test encode_history_copy!(data, c, 1, 1) == 2
         @test data[1:2] == UInt8[0b00000011, 0b00000000]
         @test encode!(data, c, 1; last_literal_length=1) == 2
         @test data[1:2] == UInt8[0b00000011, 0b00000000]
 
         # length-2 copy with long literal
-        c = CommandPair(false, 1024, 2, 4)
+        c = CommandPair(false, false, 1024, 2, 4)
         @test encode_history_copy!(data, c, 1, 1) == 2
         @test data[1:2] == UInt8[0b00001100, 0b11111111]
         @test encode!(data, c, 1; last_literal_length=1) == 3
@@ -221,33 +246,33 @@ end
         @test_throws ErrorException encode!(data, c, 1; last_literal_length=4)
 
         # length-2 copy with too long a lookback
-        c = CommandPair(false, 1025, 2, 4)
+        c = CommandPair(false, false, 1025, 2, 4)
         @test_throws ErrorException encode_history_copy!(data, c, 1, 1)
         @test_throws ErrorException encode!(data, c, 1; last_literal_length=1)
 
         # length-3 short-distance copy with short literal
-        c = CommandPair(false, 1, 3, 3)
+        c = CommandPair(false, false, 1, 3, 3)
         @test encode_history_copy!(data, c, 1, 0) == 2
         @test data[1:2] == UInt8[0b01000011, 0b00000000]
         @test encode!(data, c, 1) == 2
         @test data[1:2] == UInt8[0b01000011, 0b00000000]
 
         # length-3 short-distance copy with long literal
-        c = CommandPair(false, 2048, 3, 4)
+        c = CommandPair(false, false, 2048, 3, 4)
         @test encode_history_copy!(data, c, 1, 0) == 2
         @test data[1:2] == UInt8[0b01011100, 0b11111111]
         @test encode!(data, c, 1) == 3
         @test data[1:3] == UInt8[0b01011100, 0b11111111, 0b00000001]
 
         # length-3 medium-distance copy with short literal
-        c = CommandPair(false, 2049, 3, 3)
+        c = CommandPair(false, false, 2049, 3, 3)
         @test encode_history_copy!(data, c, 1, 4) == 2
         @test data[1:2] == UInt8[0b00000011, 0b00000000]
         @test encode!(data, c, 1; last_literal_length=4) == 2
         @test data[1:2] == UInt8[0b00000011, 0b00000000]
 
         # length-3 medium-distance copy with long literal
-        c = CommandPair(false, 3072, 3, 4)
+        c = CommandPair(false, false, 3072, 3, 4)
         @test encode_history_copy!(data, c, 1, 4) == 2
         @test data[1:2] == UInt8[0b00001100, 0b11111111]
         @test encode!(data, c, 1; last_literal_length=4) == 3
@@ -255,63 +280,63 @@ end
 
         # length-3 medium-distance copy with invalid last literal
         resize!(data, 4)
-        c = CommandPair(false, 3072, 3, 4)
+        c = CommandPair(false, false, 3072, 3, 4)
         @test encode_history_copy!(data, c, 1, 0) == 3
         @test data[1:3] == UInt8[0b00100001, 0b11111100, 0b00101111]
         @test encode!(data, c, 1; last_literal_length=0) == 4
         @test data[1:4] == UInt8[0b00100001, 0b11111100, 0b00101111, 0b00000001]
 
         # length-4 copy with short literal
-        c = CommandPair(false, 1, 4, 3)
+        c = CommandPair(false, false, 1, 4, 3)
         @test encode_history_copy!(data, c, 1, 0) == 2
         @test data[1:2] == UInt8[0b01100011, 0b00000000]
         @test encode!(data, c, 1) == 2
         @test data[1:2] == UInt8[0b01100011, 0b00000000]
 
         # length-4 copy with long literal
-        c = CommandPair(false, 2048, 4, 4)
+        c = CommandPair(false, false, 2048, 4, 4)
         @test encode_history_copy!(data, c, 1, 0) == 2
         @test data[1:2] == UInt8[0b01111100, 0b11111111]
         @test encode!(data, c, 1) == 3
         @test data[1:3] == UInt8[0b01111100, 0b11111111, 0b00000001]
 
         # length-4 copy with long lookback
-        c = CommandPair(false, 2049, 4, 4)
+        c = CommandPair(false, false, 2049, 4, 4)
         @test encode_history_copy!(data, c, 1, 0) == 3
         @test data[1:3] == UInt8[0b00100010, 0b00000000, 0b00100000]
         @test encode!(data, c, 1) == 4
         @test data[1:4] == UInt8[0b00100010, 0b00000000, 0b00100000, 0b00000001]
 
         # length-5-8 copy with short literal
-        c = CommandPair(false, 1, 5, 3)
+        c = CommandPair(false, false, 1, 5, 3)
         @test encode_history_copy!(data, c, 1, 0) == 2
         @test data[1:2] == UInt8[0b10000011, 0b00000000]
         @test encode!(data, c, 1) == 2
         @test data[1:2] == UInt8[0b10000011, 0b00000000]
 
         # length-5-8 copy with long literal
-        c = CommandPair(false, 2048, 8, 4)
+        c = CommandPair(false, false, 2048, 8, 4)
         @test encode_history_copy!(data, c, 1, 0) == 2
         @test data[1:2] == UInt8[0b11111100, 0b11111111]
         @test encode!(data, c, 1) == 3
         @test data[1:3] == UInt8[0b11111100, 0b11111111, 0b00000001]
 
         # length-5-8 copy with long lookback
-        c = CommandPair(false, 2049, 8, 4)
+        c = CommandPair(false, false, 2049, 8, 4)
         @test encode_history_copy!(data, c, 1, 0) == 3
         @test data[1:3] == UInt8[0b00100110, 0b00000000, 0b00100000]
         @test encode!(data, c, 1) == 4
         @test data[1:4] == UInt8[0b00100110, 0b00000000, 0b00100000, 0b00000001]
 
         # short lookback with short literal
-        c = CommandPair(false, 1, 9, 1)
+        c = CommandPair(false, false, 1, 9, 1)
         @test encode_history_copy!(data, c, 1, 0) == 3
         @test data[1:3] == UInt8[0b00100111, 0b00000001, 0b00000000]
         @test encode!(data, c, 1) == 3
         @test data[1:3] == UInt8[0b00100111, 0b00000001, 0b00000000]
 
         # short lookback with short literal and run-encoded length
-        c = CommandPair(false, 1, 34, 3)
+        c = CommandPair(false, false, 1, 34, 3)
         @test encode_history_copy!(data, c, 1, 0) == 4
         @test data[1:4] == UInt8[0b00100000, 0b00000001, 0b00000011, 0b00000000]
         @test encode!(data, c, 1) == 4
@@ -319,547 +344,54 @@ end
 
         # short lookback with long literal and run-encoded length
         resize!(data, 6)
-        c = CommandPair(false, 16384, 289, 4)
+        c = CommandPair(false, false, 16384, 289, 4)
         @test encode_history_copy!(data, c, 1, 0) == 5
         @test data[1:5] == UInt8[0b00100000, 0b00000000, 0b00000001, 0b11111100, 0b11111111]
         @test encode!(data, c, 1) == 6
         @test data[1:6] == UInt8[0b00100000, 0b00000000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
 
         # long lookback with short literal
-        c = CommandPair(false, 16385, 3, 1)
+        c = CommandPair(false, false, 16385, 3, 1)
         @test encode_history_copy!(data, c, 1, 0) == 3
         @test data[1:3] == UInt8[0b00010001, 0b00000101, 0b00000000]
         @test encode!(data, c, 1) == 3
         @test data[1:3] == UInt8[0b00010001, 0b00000101, 0b00000000]
 
         # long lookback with short literal and run-encoded length
-        c = CommandPair(false, 16385, 10, 3)
+        c = CommandPair(false, false, 16385, 10, 3)
         @test encode_history_copy!(data, c, 1, 0) == 4
         @test data[1:4] == UInt8[0b00010000, 0b00000001, 0b00000111, 0b00000000]
         @test encode!(data, c, 1) == 4
         @test data[1:4] == UInt8[0b00010000, 0b00000001, 0b00000111, 0b00000000]
 
         # long lookback with long literal and run-encoded length
-        c = CommandPair(false, 49151, 10, 4)
+        c = CommandPair(false, false, 49151, 10, 4)
         @test encode_history_copy!(data, c, 1, 0) == 4
         @test data[1:4] == UInt8[0b00011000, 0b00000001, 0b11111100, 0b11111111]
         @test encode!(data, c, 1) == 5
         @test data[1:5] == UInt8[0b00011000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
 
         # long lookback, run-encoded literal, run-encoded length (as big as it gets!)
-        c = CommandPair(false, 49151, 265, 4)
+        c = CommandPair(false, false, 49151, 265, 4)
         @test encode_history_copy!(data, c, 1, 0) == 5
         @test data[1:5] == UInt8[0b00011000, 0b00000000, 0b00000001, 0b11111100, 0b11111111]
         @test encode!(data, c, 1) == 6
         @test data[1:6] == UInt8[0b00011000, 0b00000000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
 
         # too long a lookback
-        c = CommandPair(false, 49152, 265, 4)
+        c = CommandPair(false, false, 49152, 265, 4)
         @test_throws ErrorException encode_history_copy!(data, c, 1, 0)
 
-        # EOS-lookalike
-        c = CommandPair(false, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
+        # EOS
+        c = CodecLZO.END_OF_STREAM_COMMAND
         @test encode_history_copy!(data, c, 1, 0) == 3
-        @test data[1:3] == UInt8[0b00100001, 0b00000000, 0b00000000]
+        @test data[1:3] == CodecLZO.END_OF_STREAM_DATA
 
-    end
-end
+        # EOS-lookalike
+        c = CommandPair(false, false, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
+        @test encode_history_copy!(data, c, 1, 0) == 3
+        @test data[1:3] == UInt8[0b00100001, 0b11111100, 0b11111111]
 
-@testitem "unsafe_decode LiteralCopyCommand" begin
-    data = zeros(UInt8, 3)
-    let
-        # Valid first literals
-        data[1] = 17
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data), 1) == CodecLZO.LiteralCopyCommand(1,0)
-        data[2] = 255
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data), 2) == CodecLZO.LiteralCopyCommand(1,238)
-
-        # Invalid first literal
-        data[3] = 16
-        @test_throws ErrorException @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data), 3)
-
-        # Long literals
-        data[1] = 0b00000001
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data), 1) == CodecLZO.LiteralCopyCommand(1,4)
-        data[2] = 0b00001111
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data), 2) == CodecLZO.LiteralCopyCommand(1,18)
-        data[2:3] = UInt8[0b00000000,0b00000001]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data), 2) == CodecLZO.LiteralCopyCommand(2,19)
-        data[1:2] = UInt8[0b00000000,0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data), 1) == CodecLZO.LiteralCopyCommand(2,273)
-        data[1:3] = UInt8[0b00000000,0b00000000,0b00000001]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.LiteralCopyCommand, pointer(data)) == CodecLZO.LiteralCopyCommand(3,274)
-    end
-end
-
-@testitem "encode LiteralCopyCommand" begin
-    let
-        # Valid first literals
-        output = zeros(UInt8, 4)
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,0); first_literal=true)
-        @test output == UInt8[17, 0, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,238); first_literal=true)
-        @test output == UInt8[255, 0, 0, 0]
-        
-        # Fall back to long literal
-        fill!(output, zero(UInt8))
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,239); first_literal=true) # Note: number of bytes is ignored
-        @test output == UInt8[0, 239-18, 0, 0]
-
-        # Long literals
-        fill!(output, zero(UInt8))
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,4))
-        @test output == UInt8[1, 0, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(1,18))
-        @test output == UInt8[0b00001111, 0, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(2,19))
-        @test output == UInt8[0, 1, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(2,273))
-        @test output == UInt8[0, 0b11111111, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.encode!(output, CodecLZO.LiteralCopyCommand(3,274))
-        @test output == UInt8[0, 0, 1, 0]
-    end
-end
-
-@testitem "unsafe_encode LiteralCopyCommand" begin
-    let
-        # Valid first literals
-        output = zeros(UInt8, 4)
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,0); first_literal=true)
-        @test output == UInt8[17, 0, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,238); first_literal=true)
-        @test output == UInt8[255, 0, 0, 0]
-        
-        # Fall back to long literal
-        fill!(output, zero(UInt8))
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,239); first_literal=true) # Note: number of bytes is ignored
-        @test output == UInt8[0, 239-18, 0, 0]
-
-        # Long literals
-        fill!(output, zero(UInt8))
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,4))
-        @test output == UInt8[1, 0, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(1,18))
-        @test output == UInt8[0b00001111, 0, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(2,19))
-        @test output == UInt8[0, 1, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(2,273))
-        @test output == UInt8[0, 0b11111111, 0, 0]
-
-        fill!(output, zero(UInt8))
-        CodecLZO.unsafe_encode!(pointer(output), CodecLZO.LiteralCopyCommand(3,274))
-        @test output == UInt8[0, 0, 1, 0]
-    end
-end
-
-@testitem "HistoryCopyCommand" begin
-    let
-        null_command = CodecLZO.HistoryCopyCommand(0,0,0,0)
-        @test null_command == CodecLZO.NULL_HISTORY_COMMAND
-
-        # first by size of copy, then by distance of copy
-
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1, 0, 0) # too short
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1, 1, 0) # too short
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(0, 2, 0) # too near
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1, 2, 4) # too many post-copy literals
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(49153, 2, 0) # too far
-
-        # length = 2 is special
-        for d in (1,1024)
-            # This is only allowed if the number of literals copied last was 1, 2, or 3.
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 2, 0; last_literals_copied=1)
-                @test hcc.command_length == 2
-                @test hcc.lookback == d
-                @test hcc.copy_length == 2
-            end
-        end
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1025, 2, 0; last_literals_copied=1)
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1024, 2, 0; last_literals_copied=0)
-        @test_throws ErrorException CodecLZO.HistoryCopyCommand(1024, 2, 0; last_literals_copied=4)
-
-        # length = 3 has four zones
-        for d in (1,2048)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0)
-                @test hcc.command_length == 2
-                @test hcc.lookback == d
-                @test hcc.copy_length == 3
-            end
-        end
-        for d in (2049,3072)
-            # This zone is special and is only available if the previous copy command included extra literals
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0; last_literals_copied=4)
-                @test hcc.command_length == 2
-                @test hcc.lookback == d
-                @test hcc.copy_length == 3
-            end
-        end
-        for d in (3073,16384)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0)
-                @test hcc.command_length == 3
-                @test hcc.lookback == d
-                @test hcc.copy_length == 3
-            end
-        end
-        for d in (16385,49152)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 3, 0)
-                @test hcc.command_length == 3
-                @test hcc.lookback == d
-                @test hcc.copy_length == 3
-            end
-        end
-
-        # length = 4 has only 3 zones
-        for d in (1,2048)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 4, 0)
-                @test hcc.command_length == 2
-                @test hcc.lookback == d
-                @test hcc.copy_length == 4
-            end
-        end
-        for d in (2049,16384)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 4, 0)
-                @test hcc.command_length == 3
-                @test hcc.lookback == d
-                @test hcc.copy_length == 4
-            end
-        end
-        for d in (16385,49152)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 4, 0)
-                @test hcc.command_length == 3
-                @test hcc.lookback == d
-                @test hcc.copy_length == 4
-            end
-        end
-
-        # length = 5 through 8 have 3 zones also
-        for l in 5:8
-            for d in (1,2048)
-                let
-                    hcc = CodecLZO.HistoryCopyCommand(d, l, 0)
-                    @test hcc.command_length == 2
-                    @test hcc.lookback == d
-                    @test hcc.copy_length == l
-                end
-            end
-            for d in (2049,16384)
-                let
-                    hcc = CodecLZO.HistoryCopyCommand(d, l, 0)
-                    @test hcc.command_length == 3
-                    @test hcc.lookback == d
-                    @test hcc.copy_length == l
-                end
-            end
-            for d in (16385,49152)
-                let
-                    hcc = CodecLZO.HistoryCopyCommand(d, l, 0)
-                    @test hcc.command_length == 3
-                    @test hcc.lookback == d
-                    @test hcc.copy_length == l
-                end
-            end
-        end
-
-        # lengths greater than 8 have only 2 zones
-        for d in (1,16384)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 9, 0)
-                @test hcc.command_length == 3
-                @test hcc.lookback == d
-                @test hcc.copy_length == 9
-            end
-        end
-        for d in (16385,49152)
-            let
-                hcc = CodecLZO.HistoryCopyCommand(d, 9, 0)
-                @test hcc.command_length == 3
-                @test hcc.lookback == d
-                @test hcc.copy_length == 9
-            end
-        end
-
-        # lengths are run-length encoded
-        # closer copies break at 33, farther copies break at 9
-        let
-            hcc = CodecLZO.HistoryCopyCommand(16385, 9, 0)
-            @test hcc.command_length == 3
-
-            hcc = CodecLZO.HistoryCopyCommand(16385, 10, 0)
-            @test hcc.command_length == 4
-
-            hcc = CodecLZO.HistoryCopyCommand(16385, 264, 0)
-            @test hcc.command_length == 4
-
-            hcc = CodecLZO.HistoryCopyCommand(16385, 265, 0)
-            @test hcc.command_length == 5
-        end
-
-        let
-            hcc = CodecLZO.HistoryCopyCommand(1, 33, 0)
-            @test hcc.command_length == 3
-
-            hcc = CodecLZO.HistoryCopyCommand(1, 34, 0)
-            @test hcc.command_length == 4
-
-            hcc = CodecLZO.HistoryCopyCommand(1, 288, 0)
-            @test hcc.command_length == 4
-
-            hcc = CodecLZO.HistoryCopyCommand(1, 289, 0)
-            @test hcc.command_length == 5
-        end
-    end
-end
-
-@testitem "decode HistoryCopyCommand" begin
-    let
-        # Length 2 copies
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0, 0]; last_literals_copied=1) == CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=1)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00001111, 0b11111111]; last_literals_copied=3) == CodecLZO.HistoryCopyCommand(1024, 2, 3; last_literals_copied=3)
-        
-        # Invalid length 2 copies
-        @test_throws ErrorException CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0, 0]; last_literals_copied=0)
-
-        # Length 3 copies
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0, 0]; last_literals_copied=4) == CodecLZO.HistoryCopyCommand(2049, 3, 0; last_literals_copied=4)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00001111, 0b11111111]; last_literals_copied=typemax(Int)) == CodecLZO.HistoryCopyCommand(3072, 3, 3; last_literals_copied=typemax(Int))
-
-        # Broken short command
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0]; last_literals_copied=4) == CodecLZO.NULL_HISTORY_COMMAND
-
-        # Long-distance copies
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00010001, 0b00000000, 0b00000000]) == CodecLZO.HistoryCopyCommand(16384, 3, 0) == CodecLZO.END_OF_STREAM_COMMAND
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00011111, 0b11111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(49151, 9, 3)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00011000, 0b00000001, 0b11111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(49151, 10, 3)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00011000, 0b00000000, 0b00000001, 0b11111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(49151, 265, 3)
-
-        # Broken length run
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00011000]) == CodecLZO.NULL_HISTORY_COMMAND
-
-        # Broken distance 
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00010001, 0b0000000]) == CodecLZO.NULL_HISTORY_COMMAND
-
-        # Medium-distance copies
-        # Note: the full constructor with command length is used here because this can be more efficiently expressed in a 2-byte command, below.
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00100001, 0b00000000, 0b00000000]) == CodecLZO.HistoryCopyCommand(3, 1, 3, 0)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00111111, 0b11111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(16384, 33, 3)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00100000, 0b00000001, 0b11111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(16384, 34, 3)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00100000, 0b00000000, 0b00000001, 0b11111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(16384, 289, 3)
-
-        # Broken length run
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00100000]) == CodecLZO.NULL_HISTORY_COMMAND
-
-        # Broken distance 
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b00100001, 0b00000000]) == CodecLZO.NULL_HISTORY_COMMAND
-        
-        # Short-distance copies
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b01000000, 0b00000000]) == CodecLZO.HistoryCopyCommand(1, 3, 0)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b01111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(2048, 4, 3)
-
-        # Broken command
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b01000000]) == CodecLZO.NULL_HISTORY_COMMAND
-
-        # Short-distance copies
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b10000000, 0b00000000]) == CodecLZO.HistoryCopyCommand(1, 5, 0)
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b11111111, 0b11111111]) == CodecLZO.HistoryCopyCommand(2048, 8, 3)
-
-        # Broken command
-        @test CodecLZO.decode(CodecLZO.HistoryCopyCommand, UInt8[0b10000000]) == CodecLZO.NULL_HISTORY_COMMAND
-    end
-end
-
-@testitem "unsafe_decode HistoryCopyCommand" begin
-    data = zeros(UInt8, 5)
-    let
-        # Length 2 copies
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data); last_literals_copied=1) == CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=1)
-        data[1:2] = UInt8[0b00001111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 1; last_literals_copied=3) == CodecLZO.HistoryCopyCommand(1024, 2, 3; last_literals_copied=3)
-        
-        # Invalid length 2 copies
-        @test_throws ErrorException @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 3; last_literals_copied=0)
-
-        # Length 3 copies
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 3; last_literals_copied=4) == CodecLZO.HistoryCopyCommand(2049, 3, 0; last_literals_copied=4)
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 1; last_literals_copied=typemax(Int)) == CodecLZO.HistoryCopyCommand(3072, 3, 3; last_literals_copied=typemax(Int))
-
-        # Long-distance copies
-        data[1:3] = UInt8[0b00010001, 0b00000000, 0b00000000]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 1) == CodecLZO.HistoryCopyCommand(16384, 3, 0) == CodecLZO.END_OF_STREAM_COMMAND
-        data[3:5] = UInt8[0b00011111, 0b11111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 3) == CodecLZO.HistoryCopyCommand(49151, 9, 3)
-        data[2:5] = UInt8[0b00011000, 0b00000001, 0b11111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 2) == CodecLZO.HistoryCopyCommand(49151, 10, 3)
-        data[1:5] = UInt8[0b00011000, 0b00000000, 0b00000001, 0b11111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 1) == CodecLZO.HistoryCopyCommand(49151, 265, 3)
-
-        # Medium-distance copies
-        # Note: the full constructor with command length is used here because this can be more efficiently expressed in a 2-byte command, below.
-        data[1:3] = UInt8[0b00100001, 0b00000000, 0b00000000]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 1) == CodecLZO.HistoryCopyCommand(3, 1, 3, 0)
-        data[3:5] = UInt8[0b00111111, 0b11111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 3) == CodecLZO.HistoryCopyCommand(16384, 33, 3)
-        data[2:5] = UInt8[0b00100000, 0b00000001, 0b11111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 2) == CodecLZO.HistoryCopyCommand(16384, 34, 3)
-        data[1:5] = UInt8[0b00100000, 0b00000000, 0b00000001, 0b11111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 1) == CodecLZO.HistoryCopyCommand(16384, 289, 3)
-        
-        # Short-distance copies
-        data[1:2] = UInt8[0b01000000, 0b00000000]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 1) == CodecLZO.HistoryCopyCommand(1, 3, 0)
-        data[3:4] = UInt8[0b01111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 3) == CodecLZO.HistoryCopyCommand(2048, 4, 3)
-
-        # Short-distance copies
-        data[2:3] = UInt8[0b10000000, 0b00000000]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 2) == CodecLZO.HistoryCopyCommand(1, 5, 0)
-        data[4:5] = UInt8[0b11111111, 0b11111111]
-        @test @GC.preserve data CodecLZO.unsafe_decode(CodecLZO.HistoryCopyCommand, pointer(data), 4) == CodecLZO.HistoryCopyCommand(2048, 8, 3)
-    end
-end
-
-@testitem "encode HistoryCopyCommand" begin
-    output = zeros(UInt8, 5)
-    let
-        # Length 2 copy from short distance
-        for llc in 1:3
-            CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=llc); last_literals_copied=llc)
-            @test output[1:2] == UInt8[0b00000000,0b00000000]
-        end
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(1024, 2, 3; last_literals_copied=1); last_literals_copied=1)
-        @test output[1:2] == UInt8[0b00001111,0b11111111]
-
-        # Bad LLC
-        @test_throws ErrorException CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=1); last_literals_copied=0)
-
-        # Length 3 copy from short distance
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(2049, 3, 0; last_literals_copied=4); last_literals_copied=4)
-        @test output[1:2] == UInt8[0b00000000,0b00000000]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(3072, 3, 3; last_literals_copied=typemax(Int)); last_literals_copied=typemax(Int))
-        @test output[1:2] == UInt8[0b00001111,0b11111111]
-
-        # Copies from long distances
-        # Note that this is ambiguous with the short-to-medium command below and is never chosen by the encoder!
-        # CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(16384, 3, 0))
-        # @test output[1:3] == UInt8[0b00010001,0b00000000,0b00000000]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(16385, 3, 0))
-        @test output[1:3] == UInt8[0b00010001,0b00000100,0b00000000]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(49151, 9, 3))
-        @test output[1:3] == UInt8[0b00011111,0b11111111,0b11111111]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(49151, 10, 3))
-        @test output[1:4] == UInt8[0b00011000,0b00000001,0b11111111,0b11111111]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(49151, 264, 3))
-        @test output[1:4] == UInt8[0b00011000,0b11111111,0b11111111,0b11111111]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(49151, 265, 3))
-        @test output[1:5] == UInt8[0b00011000,0b00000000,0b00000001,0b11111111,0b11111111]
-
-        # Copies from short to medium distances
-        # Note that any length shorter than 9 bytes and closer than 2kB distance is more efficiently stored as a fixed 2-byte command
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(1, 9, 0))
-        @test output[1:3] == UInt8[0b00100111,0b00000000,0b00000000]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(16384, 33, 3))
-        @test output[1:3] == UInt8[0b00111111,0b11111111,0b11111111]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(16384, 34, 3))
-        @test output[1:4] == UInt8[0b00100000,0b00000001,0b11111111,0b11111111]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(16384, 288, 3))
-        @test output[1:4] == UInt8[0b00100000,0b11111111,0b11111111,0b11111111]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(16384, 289, 3))
-        @test output[1:5] == UInt8[0b00100000,0b00000000,0b00000001,0b11111111,0b11111111]
-
-        # Short copies from short distances
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(1, 3, 0))
-        @test output[1:2] == UInt8[0b01000000,0b00000000]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(2048, 4, 3))
-        @test output[1:2] == UInt8[0b01111111,0b11111111]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(1, 5, 0))
-        @test output[1:2] == UInt8[0b10000000,0b00000000]
-        CodecLZO.encode!(output, CodecLZO.HistoryCopyCommand(2048, 8, 3))
-        @test output[1:2] == UInt8[0b11111111,0b11111111]
-    end
-end
-
-@testitem "unsafe_encode HistoryCopyCommand" begin
-    output = zeros(UInt8, 5)
-    let
-        # Length 2 copy from short distance
-        for llc in 1:3
-            @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=llc); last_literals_copied=llc)
-            @test output[1:2] == UInt8[0b00000000,0b00000000]
-        end
-        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1024, 2, 3; last_literals_copied=1); last_literals_copied=1)
-        @test output[1:2] == UInt8[0b00001111,0b11111111]
-
-        # Bad LLC
-        @test_throws ErrorException @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 2, 0; last_literals_copied=1); last_literals_copied=0)
-
-        # Length 3 copy from short distance
-        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2049, 3, 0; last_literals_copied=4); last_literals_copied=4)
-        @test output[1:2] == UInt8[0b00000000,0b00000000]
-        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(3072, 3, 3; last_literals_copied=typemax(Int)); last_literals_copied=typemax(Int))
-        @test output[1:2] == UInt8[0b00001111,0b11111111]
-
-        # Copies from long distances
-        # Note that this is ambiguous with the short-to-medium command below and is never chosen by the encoder!
-        # @GC.preserve output CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 3, 0))
-        # @test output[1:3] == UInt8[0b00010001,0b00000000,0b00000000]
-        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16385, 3, 0))
-        @test output[1:3] == UInt8[0b00010001,0b00000100,0b00000000]
-        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 9, 3))
-        @test output[1:3] == UInt8[0b00011111,0b11111111,0b11111111]
-        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 10, 3))
-        @test output[1:4] == UInt8[0b00011000,0b00000001,0b11111111,0b11111111]
-        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 264, 3))
-        @test output[1:4] == UInt8[0b00011000,0b11111111,0b11111111,0b11111111]
-        @GC.preserve output @test 5 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(49151, 265, 3))
-        @test output[1:5] == UInt8[0b00011000,0b00000000,0b00000001,0b11111111,0b11111111]
-
-        # Copies from short to medium distances
-        # Note that any length shorter than 9 bytes and closer than 2kB distance is more efficiently stored as a fixed 2-byte command
-        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 9, 0))
-        @test output[1:3] == UInt8[0b00100111,0b00000000,0b00000000]
-        @GC.preserve output @test 3 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 33, 3))
-        @test output[1:3] == UInt8[0b00111111,0b11111111,0b11111111]
-        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 34, 3))
-        @test output[1:4] == UInt8[0b00100000,0b00000001,0b11111111,0b11111111]
-        @GC.preserve output @test 4 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 288, 3))
-        @test output[1:4] == UInt8[0b00100000,0b11111111,0b11111111,0b11111111]
-        @GC.preserve output @test 5 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(16384, 289, 3))
-        @test output[1:5] == UInt8[0b00100000,0b00000000,0b00000001,0b11111111,0b11111111]
-
-        # Short copies from short distances
-        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 3, 0))
-        @test output[1:2] == UInt8[0b01000000,0b00000000]
-        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2048, 4, 3))
-        @test output[1:2] == UInt8[0b01111111,0b11111111]
-        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(1, 5, 0))
-        @test output[1:2] == UInt8[0b10000000,0b00000000]
-        @GC.preserve output @test 2 == CodecLZO.unsafe_encode!(pointer(output), CodecLZO.HistoryCopyCommand(2048, 8, 3))
-        @test output[1:2] == UInt8[0b11111111,0b11111111]
     end
 end
 

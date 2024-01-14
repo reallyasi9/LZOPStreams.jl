@@ -49,7 +49,7 @@ function Base.setindex!(h::HashMap{K,V}, value::V, key::K) where {K<:Integer, V}
     return h
 end
 
-function replace!(h::HashMap{K,V}, key::K, value::V) where {K<:Integer, V}
+function Base.replace!(h::HashMap{K,V}, key::K, value::V) where {K<:Integer, V}
     idx = multiplicative_hash(key, h.magic_number, h.bits)+1
     old_value = h.data[idx]
     h.data[idx] = value

@@ -3,7 +3,7 @@ const MAX_SMALL_LITERAL_LENGTH = 3
 const LITERAL_MASK_BITS = 4
 const SHORT_DISTANCE_HISTORY_MASK_BITS = 5
 const LONG_DISTANCE_HISTORY_MASK_BITS = 3
-const END_OF_STREAM_LOOKBACK = 16384
+const END_OF_STREAM_LOOKBACK = UInt16(16384)
 const END_OF_STREAM_COPY_LENGTH = 3
 
 """
@@ -125,20 +125,24 @@ See also: [`decode`](@ref) and [`encode`](@ref).
 """
 struct CommandPair
     first_literal::Bool
-    lookback::Int
+    eos::Bool
+    lookback::UInt16
     copy_length::Int
     literal_length::Int
 end
 
-const NULL_COMMAND = CommandPair(false, 0, 0, 0)
-const END_OF_STREAM_DATA = UInt8[0b00010000, 0b00000000, 0b00000000]
+const END_OF_STREAM_DATA = UInt8[0b00010001, 0b00000000, 0b00000000]
+const END_OF_STREAM_COMMAND = CommandPair(false, true, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0)
+const NULL_COMMAND = CommandPair(false, false, 0, 0, 0)
 
 function _validate_commands(cp::CommandPair, last_literal_length::Integer=0)
     if !cp.first_literal 
         cp.copy_length < 2 && throw(ErrorException("history copy length ($(cp.copy_length)) not allowed"))
         cp.lookback < 1 && throw(ErrorException("history copy lookback ($(cp.lookback)) not allowed"))
         cp.copy_length == 2 && (cp.lookback > 1 << 10 || last_literal_length < 1 || last_literal_length > 3) && throw(ErrorException("history copy length 2 must have a lookback ≤ $(1<<10) (got $(cp.lookback)) and last literals copied ∈ [1,3] (got $(last_literal_length))"))
+        cp.eos && (cp.copy_length != END_OF_STREAM_COPY_LENGTH || cp.lookback != END_OF_STREAM_LOOKBACK || cp.literal_length != 0) && throw(ErrorException("EOS must have a lookback of $END_OF_STREAM_LOOKBACK (got $(cp.copy_length)), a history copy length of $END_OF_STREAM_COPY_LENGTH (got $(cp.copy_length)), and no literal copy (got $(cp.literal_length))"))
     else
+        cp.eos && throw(ErrorException("EOS not allowed in first literal (empty data must be encoded as empty data)"))
         (cp.copy_length != 0 || cp.lookback != 0) && throw(ErrorException("history copies not allowed before first literal"))
         cp.literal_length < LZO1X1_MIN_MATCH && throw(ErrorException("first literal cannot copy fewer than $LZO1X1_MIN_MATCH bytes, got $(cp.literal_length)"))
     end
@@ -152,6 +156,10 @@ Return the number of bytes in the encoded commands.
 """
 function command_length(cp::CommandPair, last_literal_length::Integer=0)
     _validate_commands(cp, last_literal_length)
+
+    if cp.eos
+        return 3
+    end
 
     history_copy_command_length = 0
     if cp.first_literal
@@ -292,17 +300,12 @@ function compute_run_remainder(n::Integer, bits::Integer)
     end
 end
 
-function is_eos(c::CommandPair)
-    return !c.first_literal && c.lookback == END_OF_STREAM_LOOKBACK && c.copy_length == END_OF_STREAM_COPY_LENGTH && c.literal_length == 0
-end
-
 function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_literal::Bool = false, last_literal_length::Integer = 0)
     if !first_literal
-        if first(data, 3) == END_OF_STREAM_DATA
-            return 3, END_OF_STREAM_COMMAND
-        end
-        n_read, lookback, copy_length, post_copy_literals = decode_history_copy(data, start_index, last_literal_length)
-        if lookback == 0
+        n_read, eos, lookback, copy_length, post_copy_literals = decode_history_copy(data, start_index, last_literal_length)
+        if eos
+            return 0, END_OF_STREAM_COMMAND
+        elseif lookback == 0
             return 0, NULL_COMMAND
         end
     else
@@ -319,7 +322,7 @@ function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_liter
         literal_length = post_copy_literals
     end
 
-    return n_read, CommandPair(first_literal, lookback, copy_length, literal_length)
+    return n_read, CommandPair(first_literal, false, lookback, copy_length, literal_length)
 end
 
 
@@ -329,7 +332,7 @@ function decode_history_copy(data, start_index::Integer = 1, last_literal_length
 
     # 2-byte commands first
     if remaining_bytes < 2
-        return 0, 0, 0, 0
+        return 0, false, 0, 0, 0
     elseif command < 0b00010000
         after = command & 0b00000011
         if 0 < last_literal_length < 4
@@ -341,7 +344,7 @@ function decode_history_copy(data, start_index::Integer = 1, last_literal_length
         else
             throw(ErrorException("command 00000000 with zero last literals copied is a literal copy command: call decode_literal_copy(data) instead"))
         end
-        return 2, dist, len, after
+        return 2, false, dist, len, after
     elseif (command & 0b11000000) != 0
         after = command & 0b00000011
         if command < 0b10000000
@@ -351,26 +354,29 @@ function decode_history_copy(data, start_index::Integer = 1, last_literal_length
             len = 5 + ((command & 0b01100000) >> 5)
             dist = ((data[start_index + 1] % Int) << 3) + ((command & 0b00011100) >> 2) + 1
         end
-        return 2, dist, len, after
+        return 2, false, dist, len, after
     elseif command < 0b00100000
         # variable-width length encoding
         msb = ((command & 0b00001000) % Int) << 11
         bytes, len = decode_run(data, LONG_DISTANCE_HISTORY_MASK_BITS, start_index)
         if bytes == 0 || remaining_bytes < bytes + 2
-            return 0, 0, 0, 0
+            return 0, false, 0, 0, 0
         end
         dist = 16384 + msb + ((data[start_index + bytes + 1] % Int) << 6) + ((data[start_index + bytes] % Int) >> 2)
         after = data[start_index + bytes + 1] & 0b00000011
-        return bytes + 2, dist, len + 2, after
+        if dist == END_OF_STREAM_LOOKBACK && len+2 == END_OF_STREAM_COPY_LENGTH && after == 0
+            return 3, true, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0
+        end
+        return bytes + 2, false, dist, len + 2, after
     else
         # variable-width length encoding
         bytes, len = decode_run(data, SHORT_DISTANCE_HISTORY_MASK_BITS, start_index)
         if bytes == 0 || remaining_bytes < bytes + 2
-            return 0, 0, 0, 0
+            return 0, false, 0, 0, 0
         end
         dist = 1 + ((data[start_index + bytes + 1] % Int) << 6) + ((data[start_index + bytes] % Int) >> 2)
         after = data[start_index + bytes] & 0b00000011
-        return bytes + 2, dist, len + 2, after
+        return bytes + 2, false, dist, len + 2, after
     end
 end
 
@@ -406,7 +412,7 @@ end
 function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_literal_length::Integer)
     remaining_bytes = lastindex(data) - start_index + 1
 
-    if is_eos(cp)
+    if cp.eos
         remaining_bytes < 3 && return 0
         data[start_index] = UInt8(0b00010001)
         data[start_index + 1] = zero(UInt8)
