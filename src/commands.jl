@@ -257,6 +257,9 @@ end
 Decode the number of bytes in the encoding and the length of the run in bytes of the run in `input` given a mask of `bits` bits, optionally starting decoding at index `start_index`.
 """
 function decode_run(input, bits::Integer, start_index::Integer = 1)
+    remaining_bytes = lastindex(input) - start_index + 1
+    remaining_bytes < 1 && return 0, 0
+
     mask = ((1 << bits) - 1) % UInt8
     byte = input[start_index] & mask
     len = byte % Int
@@ -264,7 +267,8 @@ function decode_run(input, bits::Integer, start_index::Integer = 1)
         return 1, len
     end
 
-    first_non_zero = start_index+1
+    remaining_bytes < 2 && return 0, 0
+    first_non_zero = start_index + 1
     while first_non_zero < lastindex(input)
         input[first_non_zero] != 0 && break
         first_non_zero += 1
@@ -304,7 +308,7 @@ function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_liter
     if !first_literal
         n_read, eos, lookback, copy_length, post_copy_literals = decode_history_copy(data, start_index, last_literal_length)
         if eos
-            return 0, END_OF_STREAM_COMMAND
+            return n_read, END_OF_STREAM_COMMAND
         elseif lookback == 0
             return 0, NULL_COMMAND
         end
@@ -313,7 +317,7 @@ function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_liter
     end
 
     if post_copy_literals == 0
-        r, literal_length = decode_literal_copy(data[start_index + n_read], first_literal)
+        r, literal_length = decode_literal_copy(data, start_index + n_read, first_literal)
         if r == 0
             return 0, NULL_COMMAND
         end

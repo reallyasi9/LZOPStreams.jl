@@ -395,6 +395,74 @@ end
     end
 end
 
+@testitem "CommandPair decode" begin
+    using CodecLZO: CommandPair, decode_literal_copy, decode_history_copy, decode, NULL_COMMAND, END_OF_STREAM_DATA, END_OF_STREAM_COMMAND, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH
+
+    let 
+        # first literal
+        # bad command
+        data = zeros(UInt8, 1)
+        data[1] = 0b00010000
+        @test_throws ErrorException decode_literal_copy(data, 1, true)
+        @test_throws ErrorException decode(CommandPair, data, 1; first_literal=true)
+        # short first literal
+        data[1] = 0b00010001
+        @test decode_literal_copy(data, 1, true) == (1, 0)
+        @test decode(CommandPair, data, 1; first_literal=true) == (1, CommandPair(true, false, 0, 0, 0))
+        # long first literal, too few bytes
+        data[1] = 0b00000000
+        @test decode_literal_copy(data, 1, true) == (0, 0)
+        @test decode(CommandPair, data, 1; first_literal=true) == (0, NULL_COMMAND)
+        # long first literal
+        resize!(data, 2)
+        data[1:2] = UInt8[0b00000000, 0b00000001]
+        @test decode_literal_copy(data, 1, true) == (2, 19)
+        @test decode(CommandPair, data, 1; first_literal=true) == (2, CommandPair(true, false, 0, 0, 19))
+        # offset long first literal
+        @test decode_literal_copy(data, 2, true) == (1, 4)
+        @test decode(CommandPair, data, 2; first_literal=true) == (1, CommandPair(true, false, 0, 0, 4))
+        # run-encoded first literal, too few byes
+        data[2] = 0b00000000
+        @test decode_literal_copy(data, 1, true) == (0, 0)
+        @test decode(CommandPair, data, 1; first_literal=true) == (0, NULL_COMMAND)
+        # run-encoded first literal
+        resize!(data, 3)
+        data[3] = 0b00000001
+        @test decode_literal_copy(data, 1, true) == (3, 274)
+        @test decode(CommandPair, data, 1; first_literal=true) == (3, CommandPair(true, false, 0, 0, 274))
+
+        # EOS
+        data[1:3] = END_OF_STREAM_DATA
+        @test decode_history_copy(data, 1, 0) == (3, true, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0)
+        @test decode(CommandPair, data, 1; first_literal=false) == (3, END_OF_STREAM_COMMAND)
+        
+        # EOS as first literal is interpreted as a literal copy, interestingly enough
+        @test decode(CommandPair, data, 1; first_literal=true) == (1, CommandPair(true, false, 0, 0, 0))
+
+        # 2-byte history copies
+        data[1:2] = UInt8[0b00000001, 0b00000000]
+        @test decode_history_copy(data, 1, 1) == (2, false, 1, 2, 1)
+        @test decode(CommandPair, data, 1; last_literal_length=1) == (2, CommandPair(false, false, 1, 2, 1))
+        data[1:2] = UInt8[0b00001111, 0b11111111]
+        @test decode_history_copy(data, 1, 3) == (2, false, 1024, 2, 3)
+        @test decode(CommandPair, data, 1; last_literal_length=1) == (2, CommandPair(false, false, 1024, 2, 3))
+        # 2-byte history copy with no last literals
+        @test_throws ErrorException decode_history_copy(data, 1, 0)
+        # 2-byte history with long literal following
+        data[1:3] = UInt8[0b00000000, 0b00000000, 0b00000001]
+        @test decode_history_copy(data, 1, 1) == (2, false, 1, 2, 0)
+        @test decode(CommandPair, data, 1; last_literal_length=1) == (3, CommandPair(false, false, 1, 2, 4))
+
+        # 3-byte history copies
+        data[1:2] = UInt8[0b00000001, 0b00000000]
+        @test decode_history_copy(data, 1, 4) == (2, false, 2049, 3, 1)
+        @test decode(CommandPair, data, 1; last_literal_length=4) == (2, CommandPair(false, false, 2049, 3, 1))
+        data[1:2] = UInt8[0b00001111, 0b11111111]
+        @test decode_history_copy(data, 1, typemax(Int)) == (2, false, 3072, 3, 3)
+        @test decode(CommandPair, data, 1; last_literal_length=typemax(Int)) == (2, CommandPair(false, false, 3072, 3, 3))
+    end
+end
+
 @testitem "ModuloBuffer constructor" begin
     using Random
     # TODO fix this when LTS is bumped past 1.7
