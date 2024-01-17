@@ -460,6 +460,62 @@ end
         data[1:2] = UInt8[0b00001111, 0b11111111]
         @test decode_history_copy(data, 1, typemax(Int)) == (2, false, 3072, 3, 3)
         @test decode(CommandPair, data, 1; last_literal_length=typemax(Int)) == (2, CommandPair(false, false, 3072, 3, 3))
+        # 3-byte history copy with bad last literals
+        @test_throws ErrorException decode_history_copy(data, 1, 0)
+        # 3-byte history copy with long literal following
+        data[1:3] = UInt8[0b00000000, 0b00000000, 0b00000001]
+        @test decode_history_copy(data, 1, 4) == (2, false, 2049, 3, 0)
+        @test decode(CommandPair, data, 1; last_literal_length=4) == (3, CommandPair(false, false, 2049, 3, 4))
+
+        # short-distance very short history copies
+        data[1:2] = UInt8[0b01000001, 0b00000000]
+        @test decode_history_copy(data, 1, 0) == (2, false, 1, 3, 1)
+        @test decode(CommandPair, data, 1) == (2, CommandPair(false, false, 1, 3, 1))
+        data[1:2] = UInt8[0b01111111, 0b11111111]
+        @test decode_history_copy(data, 1, 0) == (2, false, 2048, 4, 3)
+        @test decode(CommandPair, data, 1) == (2, CommandPair(false, false, 2048, 4, 3))
+        # with long literal
+        data[1:3] = UInt8[0b01000000, 0b00000000, 0b00000001]
+        @test decode_history_copy(data, 1, 0) == (2, false, 1, 3, 0)
+        @test decode(CommandPair, data, 1) == (3, CommandPair(false, false, 1, 3, 4))
+        
+        # short-distance short history copies
+        data[1:2] = UInt8[0b10000001, 0b00000000]
+        @test decode_history_copy(data, 1, 0) == (2, false, 1, 5, 1)
+        @test decode(CommandPair, data, 1) == (2, CommandPair(false, false, 1, 5, 1))
+        data[1:2] = UInt8[0b11111111, 0b11111111]
+        @test decode_history_copy(data, 1, 0) == (2, false, 2048, 8, 3)
+        @test decode(CommandPair, data, 1) == (2, CommandPair(false, false, 2048, 8, 3))
+        # with long literal
+        data[1:3] = UInt8[0b10000000, 0b00000000, 0b00000001]
+        @test decode_history_copy(data, 1, 0) == (2, false, 1, 5, 0)
+        @test decode(CommandPair, data, 1) == (3, CommandPair(false, false, 1, 5, 4))
+
+        # medium-distance history copies
+        data[1:3] = UInt8[0b00100001, 0b00000001, 0b00000000]
+        @test decode_history_copy(data, 1, 0) == (3, false, 1, 3, 1)
+        @test decode(CommandPair, data, 1) == (3, CommandPair(false, false, 1, 3, 1))
+        data[1:3] = UInt8[0b00111111, 0b11111111, 0b11111111]
+        @test decode_history_copy(data, 1, 0) == (3, false, 16384, 33, 3)
+        @test decode(CommandPair, data, 1) == (3, CommandPair(false, false, 16384, 33, 3))
+        # run-encoded length
+        resize!(data, 4)
+        data[1:4] = UInt8[0b00100000, 0b00000001, 0b11111111, 0b11111111]
+        @test decode_history_copy(data, 1, 0) == (4, false, 16384, 34, 3)
+        @test decode(CommandPair, data, 1) == (4, CommandPair(false, false, 16384, 34, 3))
+
+        # long-distance history copies
+        data[1:3] = UInt8[0b00010001, 0b00000001, 0b00000000]
+        @test decode_history_copy(data, 1, 0) == (3, false, 16384, 3, 1)
+        @test decode(CommandPair, data, 1) == (3, CommandPair(false, false, 16384, 3, 1))
+        data[1:3] = UInt8[0b00011111, 0b11111111, 0b11111111]
+        @test decode_history_copy(data, 1, 0) == (3, false, 49151, 9, 3)
+        @test decode(CommandPair, data, 1) == (3, CommandPair(false, false, 49151, 9, 3))
+        # run-encoded length
+        resize!(data, 4)
+        data[1:4] = UInt8[0b00011000, 0b00000001, 0b11111111, 0b11111111]
+        @test decode_history_copy(data, 1, 0) == (4, false, 49151, 10, 3)
+        @test decode(CommandPair, data, 1) == (4, CommandPair(false, false, 49151, 10, 3))
     end
 end
 

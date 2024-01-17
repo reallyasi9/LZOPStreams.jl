@@ -72,11 +72,11 @@ The last two bits of the MSB instruct the decoder to copy 0 through 3 literals f
 
 ## Any length copy, short to medium distance
 
-Copies of any length greater than two with a lookback distance within 16384 bytes is incoded with at least three bytes and with as many as necessary to encode the run length. The command is to be interpreted in the following way (MSB first):
+Copies of any length greater than two with a lookback distance within 16384 bytes are incoded with at least three bytes and with as many as necessary to encode the run length. The command is to be interpreted in the following way (MSB first):
 
     `001LLLLL [Z zero bytes] [XXXXXXXX] EEEEEESS DDDDDDDD`
 
-The lower five bits of the first byte represent the length of the copy _minus two_. This can obviously only represent copies of length 2 to 33, so to encode longer copies, LZO1X uses the following encoding method:
+The lower five bits of the first byte represent the length of the copy _minus two_. To encode copies longer than 33 bytes, LZO1X uses the following encoding method:
 
 1. If `0bLLLLL` is non-zero, then `length = 2 + 0bLLLLL`
 2. If `0bLLLLL` is zero, then `length = 33 + Z × 255 + 0bXXXXXXXX`
@@ -87,11 +87,11 @@ The last two bits of the second-to-last byte instruct the decoder to copy `0bSS`
 
 ## Any length copy, long distance
 
-Copies of any length greater than two with a lookback distance between 16385 and 49151 bytes is incoded with at least three bytes and with as many as necessary to encode the run length. The command is to be interpreted in the following way (MSB first):
+Copies of any length greater than two with a lookback distance between 16385 and 49151 bytes are incoded with at least three bytes and with as many as necessary to encode the run length. The command is to be interpreted in the following way (MSB first):
 
     `0001HLLL [Z zero bytes] [XXXXXXXX] EEEEEESS DDDDDDDD`
 
-As with other variable length runs,, LZO1X uses the following encoding method with this command:
+As with other variable length runs, LZO1X uses the following encoding method with this command:
 
 1. If `0bLLL` is non-zero, then `length = 2 + 0bLLL`
 2. If `0bLLL` is zero, then `length = 9 + Z × 255 + 0bXXXXXXXX`
@@ -367,7 +367,7 @@ function decode_history_copy(data, start_index::Integer = 1, last_literal_length
             return 0, false, 0, 0, 0
         end
         dist = 16384 + msb + ((data[start_index + bytes + 1] % Int) << 6) + ((data[start_index + bytes] % Int) >> 2)
-        after = data[start_index + bytes + 1] & 0b00000011
+        after = data[start_index + bytes] & 0b00000011
         if dist == END_OF_STREAM_LOOKBACK && len+2 == END_OF_STREAM_COPY_LENGTH && after == 0
             return 3, true, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0
         end
