@@ -111,7 +111,7 @@ function find_next_matching!(dict::HashMap{UInt32,Int}, buffer::CircularVector{U
         if idx > 0 && input_start - idx <= LZO1X1_MAX_DISTANCE && reinterpret_get(UInt32, buffer, idx) == lookup
             return i - input_start, idx
         else
-            skip = ((i - first_nonmatching_index) >> skip_trigger) + 1
+            skip = ((i - first_nonmatching_index + 1) >> skip_trigger) + 1
             i += skip
         end
     end
@@ -181,7 +181,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             search_start = codec.bytes_read+1
             n_bytes_nonmatching, copy_start = find_next_matching!(codec.dictionary, codec.input_buffer, search_start, bytes_remaining, codec.match_end+1, codec.skip_trigger)
 
-            codec.bytes_read += n_bytes_nonmatching
+            codec.bytes_read += n_bytes_nonmatching + 1
             codec.next_copy_start = copy_start
             codec.next_match_start = codec.bytes_read
             append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read-1])
@@ -225,7 +225,7 @@ end
 
 function TranscodingStreams.finalize(codec::LZO1X1CompressorCodec)
     empty!(codec.dictionary)
-    empty!(codec.input_buffer)
+    fill!(codec.input_buffer, zero(UInt8))
     empty!(codec.literal_buffer)
     return
 end
