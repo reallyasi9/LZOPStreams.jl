@@ -13,7 +13,7 @@ const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
     LITERAL # Waiting on end of long literal
     COMMAND # Waiting to flush command to output
     FLUSH # Waiting to flush output buffer to output
-end 
+end
 
 """
     LZO1X1CompressorCodec(level::Int=5) <: TranscodingStreams.Codec
@@ -47,8 +47,8 @@ mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     state::MatchingState
 
     LZO1X1CompressorCodec(level::Integer=5) = new(HashMap{UInt32,Int}(
-        LZO1X1_HASH_BITS,
-        LZO1X1_HASH_MAGIC_NUMBER),
+            LZO1X1_HASH_BITS,
+            LZO1X1_HASH_MAGIC_NUMBER),
         CircularVector(zeros(UInt8, LZO1X1_MIN_BUFFER_SIZE * 2)),
         Vector{UInt8}(),
         0,
@@ -63,6 +63,10 @@ mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     )
 end
 
+const LZOCompressorCodec = LZO1X1CompressorCodec
+const LZOCompressorStream{S} = TranscodingStream{LZO1X1CompressorCodec,S} where {S<:IO}
+LZOCompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOCompressorCodec(), stream; kwargs...)
+
 """
     state(codec)::MatchingState
 
@@ -75,10 +79,6 @@ The state can be one of:
     - `FLUSH`: The codec is flushing the literal buffer to output.
 """
 state(codec::LZO1X1CompressorCodec) = codec.state
-
-const LZOCompressorCodec = LZO1X1CompressorCodec
-const LZOCompressorStream{S} = TranscodingStream{LZO1X1CompressorCodec,S} where S<:IO
-LZOCompressorStream(stream::IO, kwargs...) = TranscodingStream(LZOCompressorCodec(), stream; kwargs...)
 
 # function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memory)
 #     # The worst-case scenario is a super-long literal, where the input has to be emitted in
@@ -96,26 +96,47 @@ function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Me
     return max(length(input) ÷ 2, 24)
 end
 
-function find_last_matching(buffer::CircularVector{UInt8}, history_start::Int, input_start::Int, max_length::Int)
-    for i in 1:max_length
-        buffer[history_start+i-1] != buffer[input_start+i-1] && return i-1, true
+"""
+    match_length(v, i::Integer, j::Integer, N::Integer)::Int
+
+Searches `v[i:i+N-1]` for the last element that matches in `v[j:j+N-1]`, returning the maximal length of the matching elements up to and including `N`.
+
+The argument `v` need only implement `getindex(v, ::Integer)`. If the search runs out of bounds, a `BoundsError` will be thrown. If no matches are found, `0` will be returned, and if no non-match is found, `N` will be returned.
+"""
+function match_length(v, i::Integer, j::Integer, N::Integer)
+    offset = zero(Int)
+    while offset < N
+        v[i+offset] != v[j+offset] && return offset
+        offset += 1
     end
-    return max_length, false
+    return Int(N)
 end
 
-function find_next_matching!(dict::HashMap{UInt32,Int}, buffer::CircularVector{UInt8}, input_start::Int, max_length::Int, first_nonmatching_index::Int, skip_trigger::Int)
-    i = input_start
-    while i <= input_start + max_length
-        lookup = reinterpret_get(UInt32, buffer, i)
-        idx = replace!(dict, lookup, i)
-        if idx > 0 && input_start - idx <= LZO1X1_MAX_DISTANCE && reinterpret_get(UInt32, buffer, idx) == lookup
-            return i - input_start, idx
+"""
+    find_next_match!(dict::HashMap, v, i::Integer, N::Integer, [skip_trigger::Integer=typemax(Int), skip_start_index::Integer=i])::Tuple{Int,Int}
+
+Searches `v[i:i+N-1]` for the first `keytype(dict)` element that matches in its own history as recorded in `dict`, returning the first matching index `idx` and the historical location `j` such that `v[idx]` matches `v[j]`, `j<idx`, and `v[idx-skip]` does not match anything (see description of `skip` below).
+
+The argument `v` need only implement `getindex(v, ::Integer)`. If the search runs out of bounds, a `BoundsError` will be thrown. If no matches are found, `(-1,-1)` will be returned.
+
+The method updates `dict` in place with new information about locations of elements from `v`.
+
+Indices `idx` of `v` are examined one at a time until `skip_start_index + idx` is equal to a multiple of `pow(2, skip_trigger)`, after which every other index is examined (then every third, fourth, etc.).
+"""
+
+function find_next_match!(dict::HashMap{K,Int}, v, i::Integer, N::Integer, skip_trigger::Integer=typemax(Int), skip_start_index::Integer=i) where {K}
+    offset = zero(Int)
+    while offset < N
+        idx = Int(i + offset)
+        value = reinterpret_get(K, v, idx)
+        history = replace!(dict, value, idx)
+        if history > 0 && idx - history <= LZO1X1_MAX_DISTANCE && reinterpret_get(K, v, history) == value
+            return idx, history
         else
-            skip = ((i - first_nonmatching_index + 1) >> skip_trigger) + 1
-            i += skip
+            offset += ((idx - skip_start_index + 1) >> skip_trigger) + 1
         end
     end
-    return max_length, 0
+    return -1, -1
 end
 
 function build_command(codec::LZO1X1CompressorCodec)
@@ -125,7 +146,7 @@ end
 function flush!(output, buffer::Vector{UInt8}, output_start::Int)
     to_flush = min(length(buffer), length(output) - output_start) % Int
     for i in 1:to_flush
-        output[output_start + i - 1] = buffer[i]
+        output[output_start+i-1] = buffer[i]
     end
     if to_flush == length(buffer)
         empty!(buffer)
@@ -139,23 +160,17 @@ end
 function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory, output::Memory, ::Error)
 
     input_length = length(input) % Int
-    
+
     # An input length of zero signals EOF
     if input_length == 0
         # Everything remaining in the buffer has to be flushed as a literal because it didn't match
-        w, done = emit_last_literal!(codec, output, 1)
-        if done
-            return 0, w, :end
-        else
-            return 0, w, :ok
-        end
+        w, status = emit_last_literal!(codec, output, 1)
+        return 0, w, status
     end
 
     # Only copy up to the minimum buffer size
     to_process = min(input_length, LZO1X1_MIN_BUFFER_SIZE)
-    for i in 1:to_process
-        codec.input_buffer[codec.bytes_read+i] = input[i]
-    end
+    copyto!(codec.input_buffer, codec.bytes_read+1, input, 1, to_process)
 
     # Consume everything in the buffer
     n_written = 0
@@ -167,26 +182,33 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
         if state(codec) == HISTORY
             copy_length = codec.bytes_read - codec.match_start + 1
             bytes_remaining = to_process - LZO1X1_MIN_MATCH - codec.bytes_read
-            n_bytes_matching, end_found = find_last_matching(codec.input_buffer, codec.copy_start+copy_length, codec.bytes_read+1, bytes_remaining)
+            n_bytes_matching = match_length(codec.input_buffer, codec.copy_start + copy_length, codec.bytes_read + 1, bytes_remaining)
 
             codec.bytes_read += n_bytes_matching
-            if end_found
+            if n_bytes_matching != bytes_remaining
                 codec.match_end = codec.bytes_read
                 codec.state = LITERAL
+            else
+                continue
             end
         end
 
         if state(codec) == LITERAL
             bytes_remaining = to_process - LZO1X1_MIN_MATCH - codec.bytes_read
-            search_start = codec.bytes_read+1
-            n_bytes_nonmatching, copy_start = find_next_matching!(codec.dictionary, codec.input_buffer, search_start, bytes_remaining, codec.match_end+1, codec.skip_trigger)
+            search_start = codec.bytes_read + 1
+            match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, search_start, bytes_remaining, codec.skip_trigger, codec.match_end + 1)
 
-            codec.bytes_read += n_bytes_nonmatching + 1
             codec.next_copy_start = copy_start
-            codec.next_match_start = codec.bytes_read
-            append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read-1])
-            if copy_start > 0
+            codec.next_match_start = match_start
+            if match_start > 0
+                codec.bytes_read = match_start
                 codec.state = COMMAND
+            else
+                codec.bytes_read += bytes_remaining
+            end
+            append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read-1])
+            if match_start <= 0
+                continue
             end
         end
 
@@ -209,7 +231,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
         end
 
         if state(codec) == FLUSH
-            n_written += flush!(output, codec.literal_buffer, n_written+1)
+            n_written += flush!(output, codec.literal_buffer, n_written + 1)
             if !isempty(codec.literal_buffer)
                 # quit immediately because we ran out of output space
                 return to_process, n_written, :ok
@@ -231,12 +253,12 @@ function TranscodingStreams.finalize(codec::LZO1X1CompressorCodec)
 end
 
 function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Memory, start_index::Int)
-    
+
     w = 0
-    
+
     # in the middle of a history lookup means I can write that now
     if state(codec) == HISTORY
-        match_end = codec.bytes_read-1
+        match_end = codec.bytes_read - 1
         command = CommandPair(false, false, codec.match_start - codec.copy_start, match_end - codec.match_start + 1, 0)
         w += encode!(output, command, start_index)
     elseif state(codec) == LITERAL
@@ -248,7 +270,7 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Memory, start_
         command = build_command(codec)
         w += encode!(output, command, start_index)
         if w == 0
-            return 0, false
+            return 0, :ok
         else
             codec.match_start = codec.next_match_start
             codec.copy_start = codec.next_copy_start
@@ -260,16 +282,16 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Memory, start_
     end
 
     if state(codec) == FLUSH
-        w += flush!(output, codec.literal_buffer, w+start_index)
+        w += flush!(output, codec.literal_buffer, w + start_index)
         if !isempty(codec.literal_buffer)
-            return w, false
+            return w, :ok
         end
     end
 
-    eos_w = encode!(output, END_OF_STREAM_COMMAND, w+start_index)
+    eos_w = encode!(output, END_OF_STREAM_COMMAND, w + start_index)
     if eos_w == 0
-        return w, false
+        return w, :ok
     end
-    return w+eos_w, true
+    return w + eos_w, :end
 end
 

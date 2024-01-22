@@ -36,24 +36,6 @@ function Base.pointer(m::Memory, i::Integer = 1)
     return m.ptr + i - 1
 end
 
-"""
-    count_matching(a::AbstractVector, b::AbstractVector)
-
-Count the number of elements at the start of `a` that match the elements at the start of `b`.
-
-Equivalent to `findfirst(a .!= b)`, but faster and limiting itself to the first `min(length(a), length(b))` elements.
-"""
-function count_matching(a, start_a::Integer, b, start_b::Integer)
-    # TODO: there has to be a SIMD way to do this, but aliasing might get in the way...
-    n = min(lastindex(a) - start_a + 1, lastindex(b) - start_b + 1)
-    @inbounds for i in 0:n-1
-        if a[start_a+i] != b[start_b+i]
-            return i
-        end
-    end
-    return n
-end
-
 function Base.copyto!(d::Memory, doffs::Integer, src::AbstractArray{UInt8}, soffs::Integer, n::Integer)
     @boundscheck checkbounds(d, doffs + n - 1)
     @boundscheck checkbounds(src, soffs + n - 1)
@@ -67,6 +49,25 @@ function Base.copyto!(d::AbstractArray{UInt8}, doffs::Integer, src::Memory, soff
     GC.@preserve d src unsafe_copyto!(pointer(d, doffs), pointer(src, soffs), n)
     return d
 end
+
+"""
+    copyto!(dest::CircularVector, do, src::Memory, so, N)
+
+Copy `N` elements from collection `src` start at the linear index `so` to array `dest` starting at the index `do`. Return `dest`.
+
+Because `CircularVector`s have circular boundary conditions on the indices, the linear index `do` may be negative, zero, or greater than `lastindex(dest)`, and the number of elements copied `N` may be greater than `length(dest)`.
+"""
+function Base.copyto!(dest::CircularVector, doffs::Integer, src::Memory, soffs::Integer, n::Integer)
+    soffs = n > length(dest) ? soffs + n - length(dest) : soffs
+    n = min(n, length(dest))
+    offset = 0
+    while offset < n
+        dest[doffs + offset] = src[soffs + offset]
+        offset += 1
+    end
+    dest
+end
+
 
 """
     maxcopy!(dest, start_index, src)::Int
