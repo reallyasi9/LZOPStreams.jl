@@ -413,6 +413,12 @@ function encode!(data, cp::CommandPair, start_index::Integer=1; last_literal_len
     return n_written
 end
 
+function encode(cp::CommandPair; last_literal_length::Integer=0)
+    output = Vector{UInt8}(undef, command_length(cp, last_literal_length))
+    encode!(output, cp, 1; last_literal_length=last_literal_length)
+    return output
+end
+
 function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_literal_length::Integer)
     remaining_bytes = lastindex(data) - start_index + 1
 
@@ -509,7 +515,6 @@ function encode_literal_copy!(data, cp::CommandPair, start_index::Integer)
     end
 
     if cp.first_literal
-        # This is completely valid for the first literal, but liblzo2 doesn't use this special encoding
         if cp.literal_length <= MAX_FIRST_LITERAL_LENGTH
             data[start_index] = (cp.literal_length+17) % UInt8
             return 1
@@ -519,7 +524,6 @@ function encode_literal_copy!(data, cp::CommandPair, start_index::Integer)
     end
 
     # 2-bit literal lengths are encoded in the low two bits of the previous command.
-    # Interestingly, because the distance is encoded in LE, the 2-bit literal incoding is always on the first byte of the output buffer.
     if cp.literal_length <= MAX_SMALL_LITERAL_LENGTH
         return 0
     end

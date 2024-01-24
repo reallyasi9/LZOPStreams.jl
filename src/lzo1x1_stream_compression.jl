@@ -118,7 +118,7 @@ end
 
 Searches `v[i:i+N-1]` for the first `keytype(dict)` element that matches in its own history as recorded in `dict`, returning the first matching index `idx` and the historical location `j` such that `v[idx]` matches `v[j]`, `j<idx`, and `v[idx-skip]` does not match anything (see description of `skip` below).
 
-The argument `v` need only implement `getindex(v, ::Integer)`. If the search runs out of bounds, a `BoundsError` will be thrown. If no matches are found, `(-1,-1)` will be returned.
+The argument `v` need only implement `getindex(v, ::Integer)`. If the search runs out of bounds, a `BoundsError` will be thrown. If no matches are found, `(0,0)` will be returned.
 
 The method updates `dict` in place with new information about locations of elements from `v`.
 
@@ -137,7 +137,7 @@ function find_next_match!(dict::HashMap{K,Int}, v, i::Integer, N::Integer, skip_
             offset += ((idx - skip_start_index + 1) >> skip_trigger) + 1
         end
     end
-    return -1, -1
+    return zero(Int), zero(Int)
 end
 
 function build_command(codec::LZO1X1CompressorCodec)
@@ -145,7 +145,10 @@ function build_command(codec::LZO1X1CompressorCodec)
     #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
     # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
     #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
-    return CommandPair(codec.first_literal, false, codec.match_start - codec.copy_start, codec.match_end - codec.match_start, codec.bytes_read - codec.match_end - 1)
+    lookback = codec.first_literal ? 0 : codec.match_start - codec.copy_start
+    copy_length = codec.first_literal ? 0 : codec.match_end - codec.match_start + 1
+    literal_length = codec.bytes_read - codec.match_end - 1
+    return CommandPair(codec.first_literal, false, lookback, copy_length, literal_length)
 end
 
 function flush!(output, buffer::Vector{UInt8}, output_start::Int)
@@ -217,9 +220,27 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             #             (last_copy_byte)↓           ↓codec.match_start    ↓codec.write_head
             # input_buffer: ←--**** ... ***--- ... ---**** ... ***--- ... --??? ... →
             #                  ↑codec.copy_start                 ↑codec.bytes_read
-            bytes_remaining = codec.write_head - LZO1X1_MIN_MATCH - codec.bytes_read - 1
+            # always leave off the last LZO1X1_MIN_MATCH bytes: these will be picked up in emit_last_literal! if necessary.
+            bytes_remaining = codec.write_head - codec.bytes_read - LZO1X1_MIN_MATCH
             last_copy_byte = codec.copy_start + codec.bytes_read - codec.match_start
-            n_bytes_matching = match_length(codec.input_buffer, last_copy_byte + 1, codec.bytes_read + 1, bytes_remaining)
+            n_bytes_matching = match_length(codec.input_buffer, last_copy_byte+1, codec.bytes_read+1, bytes_remaining)
+
+            # FIXME: getting closer. It looks like the history copy works now, but on 2-bit literals at the end of the stream, the encoded command has one fewer literal requested (three literals are in thestream, but the command encodes a copy of 2)
+            # Try this to see:
+            # a = repeat(UInt8.(1:10), 4)
+            # c = transcode(LZOCompressorCodec(), a)
+            # c[12:end]
+            # 
+            # 9-element Vector{UInt8}:
+            # 0x39 <- 0b001_11001 = command to copy length of 25+2...
+            # 0x26 <- (LE 16bit number with ↓)
+            # 0x00 <- 0b00000000001001_10 = lookback of 10, post literal of 2
+            # 0x08 <- (post 1)
+            # 0x09 <- (post 2)
+            # 0x0a <- !!! post 3 !!!
+            # 0x11 <- 3-byte end of stream command
+            # 0x00 <-
+            # 0x00 <- 
 
             codec.bytes_read += n_bytes_matching
             if n_bytes_matching != bytes_remaining
@@ -235,9 +256,12 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             #                  ↓codec.copy_start      ↓codec.match_start    ↓codec.bytes_read
             # input_buffer: ←--**** ... ***--- ... ---**** ... ***#### ... ##--- ... --??? ... →
             #                                                    ↑codec.match_end      ↑codec.write_head
-            bytes_remaining = codec.write_head - LZO1X1_MIN_MATCH - codec.bytes_read - 1
+            bytes_remaining = codec.write_head - LZO1X1_MIN_MATCH - codec.bytes_read
             search_start = codec.bytes_read + 1
             match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, search_start, bytes_remaining, codec.skip_trigger, codec.match_end + 1)
+
+            # FIXME: first literal looks right, but later encoded literal copy commands request a copy of one fewer byte than required (request to copy N bytes, but the next N+1 bytes in the output stream are the literals to copy)
+            # NOTE: the literals copied to the output are correct: the length encoded in the command is wrong.
 
             codec.next_copy_start = copy_start
             if match_start > 0
@@ -309,7 +333,7 @@ function emit_last_literal!(codec::LZO1X1CompressorCodec, output::Memory, start_
         end
         if state(codec) == LITERAL
             # in the middle of a literal search means I can write that now, too
-            search_start = codec.bytes_read
+            search_start = codec.bytes_read+1
             codec.bytes_read = codec.write_head-1
             append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read])
             codec.state = COMMAND
