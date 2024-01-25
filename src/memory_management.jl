@@ -37,6 +37,7 @@ function Base.pointer(m::Memory, i::Integer = 1)
 end
 
 function Base.copyto!(d::Memory, doffs::Integer, src::AbstractArray{UInt8}, soffs::Integer, n::Integer)
+    n == 0 && return d
     @boundscheck checkbounds(d, doffs + n - 1)
     @boundscheck checkbounds(src, soffs + n - 1)
     GC.@preserve d src unsafe_copyto!(pointer(d, doffs), pointer(src, soffs), n)
@@ -44,6 +45,7 @@ function Base.copyto!(d::Memory, doffs::Integer, src::AbstractArray{UInt8}, soff
 end
 
 function Base.copyto!(d::AbstractArray{UInt8}, doffs::Integer, src::Memory, soffs::Integer, n::Integer)
+    n == 0 && return d
     @boundscheck checkbounds(d, doffs + n - 1)
     @boundscheck checkbounds(src, soffs + n - 1)
     GC.@preserve d src unsafe_copyto!(pointer(d, doffs), pointer(src, soffs), n)
@@ -58,6 +60,7 @@ Copy `N` elements from collection `src` start at the linear index `so` to array 
 Because `CircularVector`s have circular boundary conditions on the indices, the linear index `do` may be negative, zero, or greater than `lastindex(dest)`, and the number of elements copied `N` may be greater than `length(dest)`.
 """
 function Base.copyto!(dest::CircularVector, doffs::Integer, src::Memory, soffs::Integer, n::Integer)
+    n == 0 && return dest
     soffs = n > length(dest) ? soffs + n - length(dest) : soffs
     n = min(n, length(dest))
     offset = 0

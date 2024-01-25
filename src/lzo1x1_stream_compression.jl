@@ -226,21 +226,6 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             last_copy_byte = codec.copy_start + codec.bytes_read - codec.match_start
             n_bytes_matching = match_length(codec.input_buffer, last_copy_byte+1, codec.bytes_read+1, bytes_remaining)
 
-            # FIXME: getting closer. It looks like everything works now, but somehow an extra zero byte is getting inserted into the literal buffer at the end.
-            # Try this to see:
-            # a = repeat(UInt8.(1:10), 4)
-            # c = transcode(LZOCompressorCodec(), a)
-            # c[12:end]
-            # 
-            # 9-element Vector{UInt8}:
-            # 0x3c <- 0b001_11100 = command to copy length of 28+2...
-            # 0x26 <- (LE 16bit number with ↓)
-            # 0x00 <- 0b00000000001001_00 = lookback of 10, post literal of 0
-            # 0x00 <- !!! this extra byte does not belong !!!
-            # 0x11 <- 3-byte end of stream command
-            # 0x00 <-
-            # 0x00 <- 
-
             codec.bytes_read += n_bytes_matching
             if last_literal || n_bytes_matching != bytes_remaining
                 codec.match_end = codec.bytes_read
@@ -259,9 +244,6 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             search_start = codec.bytes_read + 1
             match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, search_start, bytes_remaining, codec.skip_trigger, codec.match_end + 1)
 
-            # FIXME: first literal looks right, but later encoded literal copy commands request a copy of one fewer byte than required (request to copy N bytes, but the next N+1 bytes in the output stream are the literals to copy)
-            # NOTE: the literals copied to the output are correct: the length encoded in the command is wrong.
-
             codec.next_copy_start = copy_start
             if match_start > 0
                 codec.bytes_read = match_start
@@ -269,7 +251,8 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
                 codec.state = COMMAND
             else
                 codec.bytes_read += bytes_remaining
-                append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read])
+                literal_end = last_literal ? codec.bytes_read - 1 : codec.bytes_read
+                append!(codec.literal_buffer, codec.input_buffer[search_start:literal_end])
             end
 
             if last_literal
