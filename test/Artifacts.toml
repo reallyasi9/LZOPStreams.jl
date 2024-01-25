@@ -1,0 +1,39 @@
+[CalgaryCorpus]
+git-tree-sha1 = "21f5bb7956f3c952cdf3110d2e775cc1a836b485"
+lazy = true
+
+    [[CalgaryCorpus.download]]
+    sha256 = "e109eebdc19c5cee533c58bd6a49a4be3a77cc52f84ba234a089148a4f2093b7"
+    url = "http://corpus.canterbury.ac.nz/resources/calgary.tar.gz"
+
+[CanterburyArtificialCorpus]
+git-tree-sha1 = "f411be3b0a01d90f66cf2323880d117a41045b7a"
+lazy = true
+
+    [[CanterburyArtificialCorpus.download]]
+    sha256 = "cc1818a084d61fe693fe2a9db7312da25fdb4b54313502a6920abf692b7a47ab"
+    url = "http://corpus.canterbury.ac.nz/resources/artificl.tar.gz"
+
+[CanterburyCorpus]
+git-tree-sha1 = "c52938c1f8265fb67b598f112e4c70ef9d0bf062"
+lazy = true
+
+    [[CanterburyCorpus.download]]
+    sha256 = "f140e8a5b73d3f53198555a63bfb827889394a42f20825df33c810c3d5e3f8fb"
+    url = "http://corpus.canterbury.ac.nz/resources/cantrbry.tar.gz"
+
+[CanterburyLargeCorpus]
+git-tree-sha1 = "468ac2d38ab4b13a625916588822bd84b5da1915"
+lazy = true
+
+    [[CanterburyLargeCorpus.download]]
+    sha256 = "7df00ff4cb8c9ce4187d9fa4100aa88208a72d9a227e3cd8bab23b71971eaf41"
+    url = "http://corpus.canterbury.ac.nz/resources/large.tar.gz"
+
+[CanterburyMiscellaneousCorpus]
+git-tree-sha1 = "8ac9428a14c30ebb01024b5f4f363b59c2e620d5"
+lazy = true
+
+    [[CanterburyMiscellaneousCorpus.download]]
+    sha256 = "7ffa1217087e9508d24f869cbea6c404ca0910729e0b9cdae6ef2c2df3e72ea5"
+    url = "http://corpus.canterbury.ac.nz/resources/misc.tar.gz"
