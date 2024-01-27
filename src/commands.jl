@@ -41,14 +41,22 @@ LZO1X streams always begin with a literal copy command of at least four bytes. B
 - `0:15`: Treat as a "long copy" encoding (see above).
 - `17:255`: Treat as a copy of `(byte - 17)` literals.
 
-Note that `17:20` are technically invalid values for a first copy command in LZO1X streams because history lookback copy lengths must always be four or more bytes. A value of `16` in the first position is _always_ invalid because it signals a history lookback copy command, which cannot come before any literals are copied to the output.
-
 !!! note
-    The official `liblzo2` version of LZO1X properly _decodes_ these first literal copy codes, but never _encodes_ them when compressing data. This is likely because the first literal copy codes only save at most one byte in the output stream (if the number of bytes to copy is `∈ 19:272`).
+    The first literal copy command of `17` is technically a valid first copy command, even though it signals a copy of zero bytes; however, if the first byte of an LZO stream is `17`, the very next bytes _must_ encode a long literal copy because there is no history available for a history copy command, and LZO does not have a way to encode a zero-byte history copy. A value of `16` in the first position is _always_ invalid because it signals a history lookback copy command which cannot come before any literals are copied to the output.
 
 # History lookback copies
 
 In LZO1X, history lookback copies come in five varieties, the format of which is determined by the number of bytes copied, the lookback distance, and whether or not the previous command had a short literal copy tagged on the end:
+
+## Short copy, short distance
+
+Copies of five to eight bytes with a lookback distance within 2048 bytes are encoded as two bytes, with bits encoding the length and distance. The command is to be interpreted in the following way (MSB first):
+
+    `1LLDDDSS HHHHHHHH`
+
+This means copy `5 + 0bLL` bytes from a distance of `0b00000HHH_HHHHHDDD + 1`.
+
+The last two bits of the MSB instruct the decoder to copy 0 through 3 literals from the input to the output immediately following the history lookback copy.
 
 ## Very short copy, short distance
 
@@ -60,15 +68,8 @@ This means copy `3 + 0bL` from a distance of `0b00000HHH_HHHHHDDD + 1`.
 
 The last two bits of the MSB instruct the decoder to copy `0bSS` literals from the input to the output immediately following the history lookback copy.
 
-## Short copy, short distance
-
-Copies of five to eight bytes with a lookback distance within 2048 bytes are encoded as two bytes, with bits encoding the length and distance. The command is to be interpreted in the following way (MSB first):
-
-    `1LLDDDSS HHHHHHHH`
-
-This means copy `5 + 0bLL` bytes from a distance of `0b00000HHH_HHHHHDDD + 1`.
-
-The last two bits of the MSB instruct the decoder to copy 0 through 3 literals from the input to the output immediately following the history lookback copy.
+!!! note
+    LZO1X checks for historical matches based on four byte runs, so a historical copy of three bytes can only occur if the byte that follows also matches, in which case the run is at least four bytes long. The reference LZO1X algorithm used in `liblzo2` is a greedy algorithm, so it will only ever encode a three byte historical copy in the special case where the first three bytes of a sequence are repeated exactly once and are followed by a non-matching byte.
 
 ## Any length copy, short to medium distance
 
@@ -119,7 +120,7 @@ The last two bits of the first byte instruct the decoder to copy `0bSS` literals
 If the previous command was a long literal copy (of four of more bytes), then the same two-byte command means something different: it encodes a three-byte copy with a lookback distance between 2049 and 3072 bytes. The command is interpreted the same as above, but `length = 3` and `distance = 0b000000HH_HHHHHHDD + 2049`.
 
 !!! note
-    Because encoding these special commands require a historical match of fewer than four bytes, they are never _encoded_ by the LZO1X algorithm: however, they are valid LZO1X commands, and the LZO1X _decoder_ will interpret them correctly.
+    LZO1X checks for historical matches based on four byte runs, so a historical copy of two bytes can only occur if the two bytes that follow also match, in which case the run is at least four bytes long. The reference LZO1X algorithm used in `liblzo2` is a greedy algorithm, so it will only ever encode a two byte historical copy in the special case where the first two bytes of a sequence repeat exactly once and are followed by a non-matching byte.
 
 See also: [`decode`](@ref) and [`encode`](@ref).
 """
@@ -144,7 +145,6 @@ function _validate_commands(cp::CommandPair, last_literal_length::Integer=0)
     else
         cp.eos && throw(ErrorException("EOS not allowed in first literal (empty data must be encoded as empty data)"))
         (cp.copy_length != 0 || cp.lookback != 0) && throw(ErrorException("history copies not allowed before first literal"))
-        cp.literal_length < LZO1X1_MIN_MATCH && throw(ErrorException("first literal cannot copy fewer than $LZO1X1_MIN_MATCH bytes, got $(cp.literal_length)"))
     end
     cp.literal_length < 0 && throw(ErrorException("literal length ($(cp.literal_length)) not allowed"))
 end
