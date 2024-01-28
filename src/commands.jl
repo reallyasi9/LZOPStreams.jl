@@ -490,7 +490,7 @@ function encode_history_copy!(data, cp::CommandPair, start_index::Integer, last_
         elseif distance <= LZO1X1_MAX_DISTANCE
             # 0b0001HLLL_*_DDDDDDSS_DDDDDDDD, distance = 16384 + (H << 14) + D, length = 2 + (L ?: *)
             # Note that D is encoded LE in the last 16 bits!
-            n_written = encode_run!(data, cp.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS)
+            n_written = encode_run!(data, cp.copy_length - 2, LONG_DISTANCE_HISTORY_MASK_BITS, start_index)
             data[start_index] |= 0b00010000
             distance -= 16384
             H = UInt8((distance >> 14) & 1)

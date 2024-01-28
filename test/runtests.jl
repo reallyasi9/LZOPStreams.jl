@@ -68,10 +68,6 @@ end
         # null command
         @test_throws ErrorException command_length(CodecLZO.NULL_COMMAND)
 
-        # small first literal
-        cp = CommandPair(true, false, 0, 0, 0)
-        @test_throws ErrorException command_length(cp)
-
         # first literal with copy command
         cp = CommandPair(true, false, 100, 100, 4)
         @test_throws ErrorException command_length(cp)
@@ -98,6 +94,8 @@ end
         @test_throws ErrorException command_length(cp, 1)
 
         # small first literals
+        cp = CommandPair(true, false, 0, 0, 0)
+        @test command_length(cp) == 0 + 1
         cp = CommandPair(true, false, 0, 0, 4)
         @test command_length(cp) == 0 + 1
         cp = CommandPair(true, false, 0, 0, 0xff - 17)
@@ -522,6 +520,20 @@ end
         data[1:8] = UInt8[0b00011000, 0b00000000, 0b11111111, 0b11111100, 0b11111111, 0b00000000, 0b00000000, 0b11111111]
         @test decode_history_copy(data, 1, 0) == (5, false, 49151, 519, 0)
         @test decode(CommandPair, data, 1) == (8, CommandPair(false, false, 49151, 519, 528))
+    end
+end
+
+@testitem "Canterbury Corpus round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = transcode(LZOCompressorCodec, a)
+            @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
+            @test a == lzo_decompress(c)
+        end
     end
 end
 

@@ -141,14 +141,14 @@ function find_next_match!(dict::HashMap{K,Int}, v, i::Integer, N::Integer, skip_
     return zero(Int), zero(Int)
 end
 
-function build_command(codec::LZO1X1CompressorCodec)
+function build_command(codec::LZO1X1CompressorCodec, last_literal::Bool=false)
     # Invariants:
     #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
     # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
     #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
     lookback = codec.first_literal ? 0 : codec.match_start - codec.copy_start
     copy_length = codec.first_literal ? 0 : codec.match_end - codec.match_start + 1
-    literal_length = codec.bytes_read - codec.match_end - 1
+    literal_length = codec.bytes_read - codec.match_end - (last_literal ? 0 : 1)
     return CommandPair(codec.first_literal, false, lookback, copy_length, literal_length)
 end
 
@@ -268,7 +268,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
             # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
             #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
-            command = build_command(codec)
+            command = build_command(codec, last_literal)
             w = encode!(output, command, n_written + 1)
             if w > 0
                 n_written += w
@@ -292,19 +292,16 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             end
             codec.state = HISTORY
         end
+
     end
 
+    status = :ok
     if last_literal
         w = encode!(output, END_OF_STREAM_COMMAND, n_written + 1)
         if w > 0
             n_written += w
             status = :end
-        else
-            # ran out of output space
-            status = :ok
         end
-    else
-        status = :ok
     end
 
     # We are done with this load
