@@ -146,6 +146,7 @@ function build_command(codec::LZO1X1CompressorCodec, last_literal::Bool=false)
     #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
     # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
     #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
+    # TODO I would rather not rely on last_literal being passed to this command: the codec should properly construct the literal_length itself, which means at last literal, codec.bytes_read should equal codec.write_head-1, not codec.write_head.
     lookback = codec.first_literal ? 0 : codec.match_start - codec.copy_start
     copy_length = codec.first_literal ? 0 : codec.match_end - codec.match_start + 1
     literal_length = codec.bytes_read - codec.match_end - (last_literal ? 0 : 1)
