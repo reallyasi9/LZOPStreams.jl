@@ -44,7 +44,8 @@ mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     next_copy_start::Int # The location in history where the next match starts
 
     skip_trigger::Int # After 2^skip_trigger dictionary lookup misses, increase skip by 1
-    first_literal::Bool
+    first_literal::Bool # The first literal written has a special command structure
+    last_literals_copied::Int # The number of literal bytes copied in the last command written to the output
     state::MatchingState
 
     LZO1X1CompressorCodec(level::Integer=5) = new(HashMap{UInt32,Int}(
@@ -60,6 +61,7 @@ mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
         0,
         level,
         true,
+        0,
         LITERAL,
     )
 end
@@ -270,7 +272,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
             #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
             command = build_command(codec, last_literal)
-            w = encode!(output, command, n_written + 1)
+            w = encode!(output, command, n_written + 1; last_literal_length=codec.last_literals_copied)
             if w > 0
                 n_written += w
                 codec.match_start = codec.bytes_read
@@ -278,6 +280,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
                 codec.match_end = 0
                 codec.next_copy_start = 0
                 codec.first_literal = false
+                codec.last_literals_copied = command.literal_length
                 codec.state = FLUSH
             else
                 # quit immediately because we ran out of output space
