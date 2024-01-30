@@ -537,4 +537,18 @@ end
     end
 end
 
+@testitem "Calgary Corpus round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CalgaryCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = transcode(LZOCompressorCodec, a)
+            @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
+            @test a == lzo_decompress(c)
+        end
+    end
+end
+
 @run_package_tests verbose = true
