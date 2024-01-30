@@ -316,7 +316,9 @@ function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_liter
         n_read = lookback = copy_length = post_copy_literals = 0
     end
 
-    if post_copy_literals == 0
+    if post_copy_literals == 0 && start_index + n_read > lastindex(data)
+        return 0, NULL_COMMAND
+    elseif first_literal || (post_copy_literals == 0 && data[start_index + n_read] <= 0b00001111)
         r, literal_length = decode_literal_copy(data, start_index + n_read, first_literal)
         if r == 0
             return 0, NULL_COMMAND
@@ -331,7 +333,7 @@ end
 
 
 function decode_history_copy(data, start_index::Integer = 1, last_literal_length::Integer = 0)
-    remaining_bytes = length(data)
+    remaining_bytes = lastindex(data) - start_index + 1
     command = data[start_index]
 
     # 2-byte commands first

@@ -1,4 +1,4 @@
-const LZO1X1_LAST_LITERAL_MAX_SIZE = 20 # do not try to match in history if the remaining literal is this size or less
+const LZO1X1_LITERAL_BUFFER_SIZE = 20 # do not try to match in history if the remaining literal is this size or less
 const LZO1X1_MIN_MATCH = sizeof(UInt32)  # the smallest number of bytes to consider in a dictionary lookup
 
 const LZO1X1_MAX_DISTANCE = (0b11000000_00000000 - 1) % Int  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
@@ -143,7 +143,7 @@ function find_next_match!(dict::HashMap{K,Int}, v, i::Integer, N::Integer, skip_
     return zero(Int), zero(Int)
 end
 
-function build_command(codec::LZO1X1CompressorCodec, last_literal::Bool=false)
+function build_command(codec::LZO1X1CompressorCodec)
     # Invariants:
     #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
     # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
@@ -151,7 +151,7 @@ function build_command(codec::LZO1X1CompressorCodec, last_literal::Bool=false)
     # TODO I would rather not rely on last_literal being passed to this command: the codec should properly construct the literal_length itself, which means at last literal, codec.bytes_read should equal codec.write_head-1, not codec.write_head.
     lookback = codec.first_literal ? 0 : codec.match_start - codec.copy_start
     copy_length = codec.first_literal ? 0 : codec.match_end - codec.match_start + 1
-    literal_length = codec.bytes_read - codec.match_end - (last_literal ? 0 : 1)
+    literal_length = codec.bytes_read - codec.match_end - 1
     return CommandPair(codec.first_literal, false, lookback, copy_length, literal_length)
 end
 
@@ -213,7 +213,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
 
     # Consume everything in the buffer if possible
     n_written = 0
-    stop_byte = last_literal ? codec.write_head : codec.write_head - LZO1X1_MIN_MATCH
+    stop_byte = last_literal ? codec.write_head - 1 : codec.write_head - LZO1X1_MIN_MATCH
     while codec.bytes_read < stop_byte
 
         # All commands are history+literal pairs except the first (literal only) and the last (EOS, which looks like history only).
@@ -254,8 +254,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
                 codec.state = COMMAND
             else
                 codec.bytes_read += bytes_remaining
-                literal_end = last_literal ? codec.bytes_read - 1 : codec.bytes_read
-                append!(codec.literal_buffer, codec.input_buffer[search_start:literal_end])
+                append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read])
             end
 
             if last_literal
@@ -271,7 +270,11 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
             # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
             #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
-            command = build_command(codec, last_literal)
+            # this invariant requires that codec.bytes_read be one byte past the last literal (that is, pointing to the start of the next match)
+            if last_literal
+                codec.bytes_read += 1
+            end
+            command = build_command(codec)
             w = encode!(output, command, n_written + 1; last_literal_length=codec.last_literals_copied)
             if w > 0
                 n_written += w
