@@ -66,32 +66,32 @@ end
 
     let 
         # null command
-        @test_throws ErrorException command_length(CodecLZO.NULL_COMMAND)
+        @test_throws CodecLZO.CommandEncodeException command_length(CodecLZO.NULL_COMMAND)
 
         # first literal with copy command
         cp = CommandPair(true, false, 100, 100, 4)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
 
         # negative literal length
         cp = CommandPair(false, false, 100, 100, -1)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
 
         # small copy
         cp = CommandPair(false, false, 100, 1, 100)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
 
         # zero lookback
         cp = CommandPair(false, false, 0, 100, 100)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
 
         # illegal length-2 copies
         # bad last literals
         cp = CommandPair(false, false, 100, 2, 100)
-        @test_throws ErrorException command_length(cp)
-        @test_throws ErrorException command_length(cp, 4)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp, 4)
         # lookback too long
         cp = CommandPair(false, false, 1<<10 + 1, 2, 100)
-        @test_throws ErrorException command_length(cp, 1)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp, 1)
 
         # small first literals
         cp = CommandPair(true, false, 0, 0, 0)
@@ -156,16 +156,16 @@ end
         # Bad EOS
         # first literal
         cp = CommandPair(true, true, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
         # bad lookback
         cp = CommandPair(false, true, CodecLZO.END_OF_STREAM_LOOKBACK + 1, CodecLZO.END_OF_STREAM_COPY_LENGTH, 0)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
         # bad copy length
         cp = CommandPair(false, true, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH+1, 0)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
         # post-copy literals
         cp = CommandPair(false, true, CodecLZO.END_OF_STREAM_LOOKBACK, CodecLZO.END_OF_STREAM_COPY_LENGTH, 1)
-        @test_throws ErrorException command_length(cp)
+        @test_throws CodecLZO.CommandEncodeException command_length(cp)
 
     end
 end
@@ -238,15 +238,20 @@ end
         @test data[1:3] == UInt8[0b00001100, 0b11111111, 0b00000001]
 
         # length-2 copy with invalid last literals
-        @test_throws ErrorException encode_history_copy!(data, c, 1, 0)
-        @test_throws ErrorException encode!(data, c, 1; last_literal_length=0)
-        @test_throws ErrorException encode_history_copy!(data, c, 1, 4)
-        @test_throws ErrorException encode!(data, c, 1; last_literal_length=4)
+        @test_throws CodecLZO.CommandEncodeException encode_history_copy!(data, c, 1, 0)
+        @test_throws CodecLZO.CommandEncodeException encode!(data, c, 1; last_literal_length=0)
+        @test_throws CodecLZO.CommandEncodeException encode_history_copy!(data, c, 1, 4)
+        @test_throws CodecLZO.CommandEncodeException encode!(data, c, 1; last_literal_length=4)
 
         # length-2 copy with too long a lookback
         c = CommandPair(false, false, 1025, 2, 4)
-        @test_throws ErrorException encode_history_copy!(data, c, 1, 1)
-        @test_throws ErrorException encode!(data, c, 1; last_literal_length=1)
+        @test_throws CodecLZO.CommandEncodeException encode_history_copy!(data, c, 1, 1)
+        @test_throws CodecLZO.CommandEncodeException encode!(data, c, 1; last_literal_length=1)
+
+        # length-2 copy with no space
+        c = CommandPair(false, false, 1024, 2, 4)
+        @test encode_history_copy!(UInt8[], c, 1, 1) == 0
+        @test encode!(UInt8[], c, 1; last_literal_length=1) == 0
 
         # length-3 short-distance copy with short literal
         c = CommandPair(false, false, 1, 3, 3)
@@ -261,6 +266,11 @@ end
         @test data[1:2] == UInt8[0b01011100, 0b11111111]
         @test encode!(data, c, 1) == 3
         @test data[1:3] == UInt8[0b01011100, 0b11111111, 0b00000001]
+
+        # length-3 short-distance copy with no space
+        c = CommandPair(false, false, 1, 3, 3)
+        @test encode_history_copy!(UInt8[], c, 1, 0) == 0
+        @test encode!(UInt8[], c, 1; last_literal_length=0) == 0
 
         # length-3 medium-distance copy with short literal
         c = CommandPair(false, false, 2049, 3, 3)
@@ -284,6 +294,11 @@ end
         @test encode!(data, c, 1; last_literal_length=0) == 4
         @test data[1:4] == UInt8[0b00100001, 0b11111100, 0b00101111, 0b00000001]
 
+        # length-3 medium-distance copy with no space
+        c = CommandPair(false, false, 2049, 3, 3)
+        @test encode_history_copy!(UInt8[], c, 1, 4) == 0
+        @test encode!(UInt8[], c, 1; last_literal_length=4) == 0
+
         # length-4 copy with short literal
         c = CommandPair(false, false, 1, 4, 3)
         @test encode_history_copy!(data, c, 1, 0) == 2
@@ -305,6 +320,11 @@ end
         @test encode!(data, c, 1) == 4
         @test data[1:4] == UInt8[0b00100010, 0b00000000, 0b00100000, 0b00000001]
 
+        # length-4 copy with no space
+        c = CommandPair(false, false, 2048, 4, 4)
+        @test encode_history_copy!(UInt8[], c, 1, 0) == 0
+        @test encode!(UInt8[], c, 1; last_literal_length=0) == 0
+
         # length-5-8 copy with short literal
         c = CommandPair(false, false, 1, 5, 3)
         @test encode_history_copy!(data, c, 1, 0) == 2
@@ -325,6 +345,11 @@ end
         @test data[1:3] == UInt8[0b00100110, 0b00000000, 0b00100000]
         @test encode!(data, c, 1) == 4
         @test data[1:4] == UInt8[0b00100110, 0b00000000, 0b00100000, 0b00000001]
+
+        # length-5-8 copy with no space
+        c = CommandPair(false, false, 1, 5, 3)
+        @test encode_history_copy!(UInt8[], c, 1, 0) == 0
+        @test encode!(UInt8[], c, 1; last_literal_length=0) == 0
 
         # short lookback with short literal
         c = CommandPair(false, false, 1, 9, 1)
@@ -348,6 +373,11 @@ end
         @test encode!(data, c, 1) == 6
         @test data[1:6] == UInt8[0b00100000, 0b00000000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
 
+        # short lookback with no space
+        c = CommandPair(false, false, 1, 9, 1)
+        @test encode_history_copy!(UInt8[], c, 1, 0) == 0
+        @test encode!(UInt8[], c, 1; last_literal_length=0) == 0
+
         # long lookback with short literal
         c = CommandPair(false, false, 16385, 3, 1)
         @test encode_history_copy!(data, c, 1, 0) == 3
@@ -369,6 +399,11 @@ end
         @test encode!(data, c, 1) == 5
         @test data[1:5] == UInt8[0b00011000, 0b00000001, 0b11111100, 0b11111111, 0b00000001]
 
+        # long lookback with no space
+        c = CommandPair(false, false, 16385, 3, 1)
+        @test encode_history_copy!(UInt8[], c, 1, 0) == 0
+        @test encode!(UInt8[], c, 1; last_literal_length=0) == 0
+
         # long lookback, run-encoded literal, run-encoded length (as big as it gets!)
         c = CommandPair(false, false, 49151, 265, 4)
         @test encode_history_copy!(data, c, 1, 0) == 5
@@ -378,7 +413,7 @@ end
 
         # too long a lookback
         c = CommandPair(false, false, 49152, 265, 4)
-        @test_throws ErrorException encode_history_copy!(data, c, 1, 0)
+        @test_throws CodecLZO.CommandEncodeException encode_history_copy!(data, c, 1, 0)
 
         # EOS
         c = CodecLZO.END_OF_STREAM_COMMAND
@@ -401,8 +436,8 @@ end
         # bad command
         data = zeros(UInt8, 1)
         data[1] = 0b00010000
-        @test_throws ErrorException decode_literal_copy(data, 1, true)
-        @test_throws ErrorException decode(CommandPair, data, 1; first_literal=true)
+        @test_throws CodecLZO.CommandDecodeException decode_literal_copy(data, 1, true)
+        @test_throws CodecLZO.CommandDecodeException decode(CommandPair, data, 1; first_literal=true)
         # short first literal
         data[1] = 0b00010001
         @test decode_literal_copy(data, 1, true) == (1, 0)
@@ -445,7 +480,7 @@ end
         @test decode_history_copy(data, 1, 3) == (2, false, 1024, 2, 3)
         @test decode(CommandPair, data, 1; last_literal_length=1) == (2, CommandPair(false, false, 1024, 2, 3))
         # 2-byte history copy with no last literals
-        @test_throws ErrorException decode_history_copy(data, 1, 0)
+        @test_throws CodecLZO.CommandDecodeException decode_history_copy(data, 1, 0)
         # 2-byte history with long literal following
         data[1:3] = UInt8[0b00000000, 0b00000000, 0b00000001]
         @test decode_history_copy(data, 1, 1) == (2, false, 1, 2, 0)
@@ -459,7 +494,7 @@ end
         @test decode_history_copy(data, 1, typemax(Int)) == (2, false, 3072, 3, 3)
         @test decode(CommandPair, data, 1; last_literal_length=typemax(Int)) == (2, CommandPair(false, false, 3072, 3, 3))
         # 3-byte history copy with bad last literals
-        @test_throws ErrorException decode_history_copy(data, 1, 0)
+        @test_throws CodecLZO.CommandDecodeException decode_history_copy(data, 1, 0)
         # 3-byte history copy with long literal following
         data[1:3] = UInt8[0b00000000, 0b00000000, 0b00000001]
         @test decode_history_copy(data, 1, 4) == (2, false, 2049, 3, 0)
@@ -523,7 +558,16 @@ end
     end
 end
 
-@testitem "Canterbury Corpus round trip" begin
+@testitem "Corner case compression round trip" begin
+    let 
+        # this covers a corner case where the command encoding the run length of the last literal called for one too many bytes
+        a = UInt8[1,2,1,2,1,2,9,8,7,6,5,4,3,2,1,0]
+        c = transcode(LZOCompressorCodec, a)
+        @test a == lzo_decompress(c)
+    end
+end
+
+@testitem "Canterbury Corpus compression round trip" begin
     using LazyArtifacts
 
     let 
@@ -537,11 +581,53 @@ end
     end
 end
 
-@testitem "Calgary Corpus round trip" begin
+@testitem "Calgary Corpus compression round trip" begin
     using LazyArtifacts
 
     let 
         artifact_path = artifact"CalgaryCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = transcode(LZOCompressorCodec, a)
+            @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
+            @test a == lzo_decompress(c)
+        end
+    end
+end
+
+@testitem "Centerbury Artificial Corpus compression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyArtificialCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = transcode(LZOCompressorCodec, a)
+            @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
+            @test a == lzo_decompress(c)
+        end
+    end
+end
+
+@testitem "Canterbury Large Corpus compression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyLargeCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = transcode(LZOCompressorCodec, a)
+            @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
+            @test a == lzo_decompress(c)
+        end
+    end
+end
+
+@testitem "Canterbury Miscellaneous Corpus compression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyMiscellaneousCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
             c = transcode(LZOCompressorCodec, a)

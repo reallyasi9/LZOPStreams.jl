@@ -2,6 +2,7 @@ const Optional{T} = Union{T,Nothing}
 
 struct LZOException <: Exception
     code::Int
+    message::String
 end
 struct OutOfMemoryException <: Exception
     input_index::Optional{Int}
@@ -12,18 +13,18 @@ end
 struct InputOverrunException <: Exception
     input_index::Optional{Int}
     input_length::Optional{Int}
-    command::Optional{Vector{UInt8}}
+    command::Optional{AbstractVector{UInt8}}
 end
 struct OutputOverrunException <: Exception
     input_index::Optional{Int}
     output_index::Optional{Int}
     output_length::Optional{Int}
-    command::Optional{Vector{UInt8}}
+    command::Optional{AbstractVector{UInt8}}
 end
 struct LookbehindOverrunException <: Exception
     input_index::Optional{Int}
     output_index::Optional{Int}
-    command::Optional{Vector{UInt8}}
+    command::Optional{AbstractVector{UInt8}}
 end
 struct EndOfStreamNotFoundException <: Exception
 end
@@ -31,9 +32,17 @@ struct InputNotConsumedException <: Exception
     input_index::Optional{Int}
     input_length::Optional{Int}
 end
+struct CommandEncodeException <: Exception
+    message::String
+    command::Optional{AbstractVector{UInt8}}
+end
+struct CommandDecodeException <: Exception
+    message::String
+    data::Optional{AbstractVector{UInt8}}
+end
 
 function Base.showerror(io::IO, e::LZOException)
-    print(io, "code ", e.code, ": generic exception")
+    print(io, "code ", e.code, ": ", e.message)
 end
 
 function Base.showerror(io::IO, e::OutOfMemoryException)
@@ -76,4 +85,16 @@ function Base.showerror(io::IO, e::InputNotConsumedException)
     print(io, "code -8: input not consumed exception")
     isnothing(e.input_index) || print(io, " finishing at input byte ", e.input_index)
     isnothing(e.input_length) || print(io, " from input of length ", e.input_length)
+end
+
+function Base.showerror(io::IO, e::CommandEncodeException)
+    print(io, "command encode exception")
+    isnothing(e.command) || print(io, " while encoding command ", e.command)
+    print(io, ": ", e.message)
+end
+
+function Base.showerror(io::IO, e::CommandDecodeException)
+    print(io, "command decode exception")
+    isnothing(e.data) || print(io, " while decoding data ", e.data)
+    print(io, ": ", e.message)
 end
