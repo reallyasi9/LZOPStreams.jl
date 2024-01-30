@@ -74,8 +74,14 @@ function lzo_decompress!(dest::Vector{UInt8}, src::AbstractVector{UInt8})
         if e == LZO_E_OUTPUT_OVERRUN
             resize!(dest, length(dest)*2)
             size_ptr[] = length(dest)
+        elseif e == LZO_E_INPUT_NOT_CONSUMED
+            throw(InputNotConsumedException())
+        elseif e == LZO_E_EOF_NOT_FOUND
+            throw(EndOfStreamNotFoundException())
+        elseif e == LZO_E_INPUT_OVERRUN
+            throw(InputOverrunException())
         elseif e != LZO_E_OK
-            throw(ErrorException("liblzo2 decompression error: $e"))
+            throw(LZOException(e, "liblzo2 decompression error: $e"))
         else
             break
         end

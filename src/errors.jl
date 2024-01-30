@@ -8,6 +8,7 @@ struct OutOfMemoryException <: Exception
     input_index::Optional{Int}
     output_index::Optional{Int}
 end
+OutOfMemoryException() = OutOfMemoryException(nothing, nothing)
 struct NotCompressibleException <: Exception
 end
 struct InputOverrunException <: Exception
@@ -15,31 +16,37 @@ struct InputOverrunException <: Exception
     input_length::Optional{Int}
     command::Optional{AbstractVector{UInt8}}
 end
+InputOverrunException() = InputOverrunException(nothing, nothing, nothing)
 struct OutputOverrunException <: Exception
     input_index::Optional{Int}
     output_index::Optional{Int}
     output_length::Optional{Int}
     command::Optional{AbstractVector{UInt8}}
 end
+OutputOverrunException() = OutputOverrunException(nothing, nothing, nothing, nothing)
 struct LookbehindOverrunException <: Exception
     input_index::Optional{Int}
     output_index::Optional{Int}
     command::Optional{AbstractVector{UInt8}}
 end
+LookbehindOverrunException() = LookbehindOverrunException(nothing, nothing, nothing)
 struct EndOfStreamNotFoundException <: Exception
 end
 struct InputNotConsumedException <: Exception
     input_index::Optional{Int}
     input_length::Optional{Int}
 end
+InputNotConsumedException() = InputNotConsumedException(nothing, nothing)
 struct CommandEncodeException <: Exception
     message::String
     command::Optional{AbstractVector{UInt8}}
 end
+CommandEncodeException(message::AbstractString) = CommandEncodeException(message, nothing)
 struct CommandDecodeException <: Exception
     message::String
     data::Optional{AbstractVector{UInt8}}
 end
+CommandDecodeException(message::AbstractString) = CommandDecodeException(message, nothing)
 
 function Base.showerror(io::IO, e::LZOException)
     print(io, "code ", e.code, ": ", e.message)
