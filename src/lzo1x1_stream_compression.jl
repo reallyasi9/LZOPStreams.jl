@@ -168,7 +168,20 @@ function flush!(output, buffer::Vector{UInt8}, output_start::Int)
 end
 
 function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory, output::Memory, err::Error)
-
+    # This algorithm has three phases:
+    #  1. Reading data from the input memory and into the input buffer
+    #  2. Processing the input buffer to construct a history and literal copy command pair
+    #  3. Writing the commands and literals to the output memory location
+    # Phases 2 and 3 can be interrupted by a blocked stream:
+    #  - The input stream could end in the middle of a historical copy, in which case the algorithm has to request more input to fill the input buffer to continue;
+    #  - The input stream could end in the middle of a literal copy (searching for the next historical copy), in which case the algorithm has to request more input to fill the input buffer to continue;
+    #  - The output memory could be too small to hold the command pair, in which case the algorithm has to request a larger output before continuing;
+    #  - The output memory could be too small to hold the literal copy, in which case the algorithm has to request a larger output before continuing.
+    # Each one of these possible interruption scenarios has a different limit on how many free bytes remaining in stream before the phase is abandoned:
+    #  - If in the middle of a historical copy, as long as at least three bytes are found that match in history, the phase can read up to the end of the input buffer;
+    #  - If in the middle of a literal copy, the pahse can read up to the end of the input buffer no matter what;
+    #  - If in the middle of outputting a command pair, if the command cannot fit into the output, no bytes are written and the phase is abandoned immediately;
+    #  - If in the middle of outputting a literal copy, the literals can be copied up to the end of the output memory location no matter what.
     # The input and output memory buffers are of indeterminate length, and the state of the codec at call time is arbitrary.
     #
     # This is what the input buffer looks like, each `-` representing a UInt8 value:
@@ -185,10 +198,10 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     #
     # To begin, everything is loaded into a buffer with circular boundary conditions so we have the ability to lookup historical matches up to the lookback limit without having an infinitely large buffer or having to move data around all the time.
     # The buffer, called `codec.input_buffer`, has space for twice the lookback limit so we can guarantee that we still have all the possible historical matches available for the first byte of the input copied into the buffer.
-    # By design, the buffer appears to run from index 1 to infinity, and at the start of the call to `process`, the algorithm has processed up to `codec.bytes_read`.
-    # The `codec.write_head` is the index of the next byte that will be overwritten in the input_buffer, so the copy looks like this:
+    # By design, the buffer appears to run from index 1 to infinity, and at the start of the call to `process`, the algorithm has read and processed up to and including `codec.bytes_read`.
+    # `codec.write_head` is the index of the next byte that will be overwritten in the input_buffer, so the copy looks like this:
     #
-    # Before:
+    # Before copying to the input buffer:
     # input:  --------- ... ---
     # index: 1↑               ↑length(input)
     # input_buffer: ←******* ... ***---?? ... ???????→
@@ -196,8 +209,8 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     #
     # After:
     # input_buffer: ←******* ... ***----- ... ---????→
-    # index:        1↑   bytes_read↑            ↑   ↑2*(lookback limit)
-    #                                           |write_head' = write_head+length(input)
+    # index:        1↑   bytes_read↑             ↑  ↑2*(lookback limit)
+    #                                            |write_head' = write_head+length(input)
 
     input_length = length(input) % Int
 
@@ -219,7 +232,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     stop_byte = last_literal ? codec.write_head - 1 : codec.write_head - LZO1X1_MIN_PROCESSING_SIZE
     while codec.bytes_read < stop_byte
 
-        # All commands are history+literal pairs except the first (literal only) and the last (EOS, which looks like history only).
+        # All commands are history+literal pairs except the first (literal only)
         # The last command is already taken care of above.
         # If this is the first literal, the history part is skipped.
         if state(codec) == HISTORY
