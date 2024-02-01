@@ -35,8 +35,8 @@ mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
     input_buffer::CircularVector{UInt8} # 49151-byte history of uncompressed input data for history copy command lookups
     literal_buffer::Vector{UInt8} # required dynamic buffer for literals longer than the lookback length (expands and contracts as needed)
 
-    write_head::Int # Where the next byte of data will go in input_buffer
-    bytes_read::Int # Number of bytes read from the start of the input_buffer (so lookbacks have a common starting point)
+    next_write::Int # Where the next byte of data will go into input_buffer
+    next_read::Int # Index from where the next byte of data from input_buffer will be read
 
     copy_start::Int # Where in the history of the raw input stream a match was found and a copy begins (match_start - copy_start = lookback)
     match_start::Int # Where in the raw input stream the first match of a historcal sequence was discovered (match_end - match_start + 1 = copy_length)
@@ -54,7 +54,7 @@ mutable struct LZO1X1CompressorCodec <: TranscodingStreams.Codec
         CircularVector(zeros(UInt8, LZO1X1_MIN_BUFFER_SIZE * 2)),
         Vector{UInt8}(),
         1,
-        0,
+        1,
         0,
         0,
         0,
@@ -96,7 +96,7 @@ state(codec::LZO1X1CompressorCodec) = codec.state
 
 function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Memory)
     # Usually around 2.4:1 compression ratio with a minimum of 24 bytes (see https://morotti.github.io/lzbench-web)
-    return max(length(input) ÷ 2, 24)
+    return max(length(input) ÷ 2, 24) % Int
 end
 
 """
@@ -117,27 +117,26 @@ end
 
 
 """
-    find_next_match!(dict::HashMap, v, i::Integer, N::Integer, [skip_trigger::Integer=typemax(Int), skip_start_index::Integer=i])::Tuple{Int,Int}
+    find_next_match!(dict::HashMap, v, first_index::Integer, last_index::Integer, [skip_trigger::Integer=typemax(Int), skip_start_index::Integer=i])::Tuple{Int,Int}
 
-Searches `v[i:i+N-1]` for the first `keytype(dict)` element that matches in its own history as recorded in `dict`, returning the first matching index `idx` and the historical location `j` such that `v[idx]` matches `v[j]`, `j<idx`, and `v[idx-skip]` does not match anything (see description of `skip` below).
+Searches `v` frin `first_index` to `last_index` for the first `keytype(dict)` element that matches in its own history as recorded in `dict`, returning the first matching index `i` and the historical index `j` such that `v[i] == v[j]`, `j<i`, and `v[i-skip]` does not match anything (see description of `skip` below).
 
 The argument `v` need only implement `getindex(v, ::Integer)`. If the search runs out of bounds, a `BoundsError` will be thrown. If no matches are found, `(0,0)` will be returned.
 
 The method updates `dict` in place with new information about locations of elements from `v`.
 
-Indices `idx` of `v` are examined one at a time until `skip_start_index + idx` is equal to a multiple of `pow(2, skip_trigger)`, after which every other index is examined (then every third, fourth, etc.).
+Indices `i` of `v` are examined one at a time until `skip_start_index - i + 1` is equal to a multiple of `pow(2, skip_trigger)`, after which every other index is examined (then every third, fourth, etc.).
 """
 
-function find_next_match!(dict::HashMap{K,Int}, v, i::Integer, N::Integer, skip_trigger::Integer=typemax(Int), skip_start_index::Integer=i) where {K}
-    offset = zero(Int)
-    while offset < N
-        idx = Int(i + offset)
-        value = reinterpret_get(K, v, idx)
-        history = replace!(dict, value, idx)
-        if history > 0 && idx - history <= LZO1X1_MAX_DISTANCE && reinterpret_get(K, v, history) == value
-            return idx, history
+function find_next_match!(dict::HashMap{K,Int}, v, first_index::Integer, last_index::Integer, skip_trigger::Integer=typemax(Int), skip_start_index::Integer=first_index) where {K}
+    i = Int(first_index)
+    while i <= last_index
+        value = reinterpret_get(K, v, i)
+        history = replace!(dict, value, i)
+        if history > 0 && i - history <= LZO1X1_MAX_DISTANCE && reinterpret_get(K, v, history) == value
+            return i, history
         else
-            offset += ((idx - skip_start_index + 1) >> skip_trigger) + 1
+            i += ((i - skip_start_index + 1) >> skip_trigger) + 1
         end
     end
     return zero(Int), zero(Int)
@@ -145,13 +144,17 @@ end
 
 function build_command(codec::LZO1X1CompressorCodec)
     # Invariants:
-    #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
-    # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
-    #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
-    # TODO I would rather not rely on last_literal being passed to this command: the codec should properly construct the literal_length itself, which means at last literal, codec.bytes_read should equal codec.write_head-1, not codec.write_head.
+    #  codec.copy_start < codec.match_start (copy can start at the very previous byte, but not the same byte as the match start)
+    #  codec.match_start < codec.match_end - 1 (length of copy has to be at least 2)
+    #  codec.match_end < codec.next_read
+    # 1              codec.match_start  codec.next_read
+    # ↓              ↓                  ↓
+    # [??(******)....(******)###########(????]
+    #    ↑                  ↑                ↑
+    #    codec.copy_start   codec.match_end  codec.next_write
     lookback = codec.first_literal ? 0 : codec.match_start - codec.copy_start
     copy_length = codec.first_literal ? 0 : codec.match_end - codec.match_start + 1
-    literal_length = codec.bytes_read - codec.match_end - 1
+    literal_length = codec.next_read - codec.match_end - 1
     return CommandPair(codec.first_literal, false, lookback, copy_length, literal_length)
 end
 
@@ -183,42 +186,11 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     #  - If in the middle of outputting a command pair, if the command cannot fit into the output, no bytes are written and the phase is abandoned immediately;
     #  - If in the middle of outputting a literal copy, the literals can be copied up to the end of the output memory location no matter what.
     # The input and output memory buffers are of indeterminate length, and the state of the codec at call time is arbitrary.
-    #
-    # This is what the input buffer looks like, each `-` representing a UInt8 value:
-    #
-    # input:  --------- ... ---
-    # index: 1↑               ↑length(input)
-    #
-    # The output buffer looks similar:
-    #
-    # output: ????????? ... ???
-    # index: 1↑               ↑length(output)
-    #
-    # Note that the output buffer might be filled with garbage at the start of each call to `process`.
-    #
-    # To begin, everything is loaded into a buffer with circular boundary conditions so we have the ability to lookup historical matches up to the lookback limit without having an infinitely large buffer or having to move data around all the time.
-    # The buffer, called `codec.input_buffer`, has space for twice the lookback limit so we can guarantee that we still have all the possible historical matches available for the first byte of the input copied into the buffer.
-    # By design, the buffer appears to run from index 1 to infinity, and at the start of the call to `process`, the algorithm has read and processed up to and including `codec.bytes_read`.
-    # `codec.write_head` is the index of the next byte that will be overwritten in the input_buffer, so the copy looks like this:
-    #
-    # Before copying to the input buffer:
-    # input:  --------- ... ---
-    # index: 1↑               ↑length(input)
-    # input_buffer: ←******* ... ***---?? ... ???????→
-    # index:        1↑   bytes_read↑   ↑write_head  ↑2*(lookback limit)
-    #
-    # After:
-    # input_buffer: ←******* ... ***----- ... ---????→
-    # index:        1↑   bytes_read↑             ↑  ↑2*(lookback limit)
-    #                                            |write_head' = write_head+length(input)
 
-    input_length = length(input) % Int
+    input_length = length(input) % Int # length(input) returns an unsigned int for no good reason
 
-    # An input length of zero signals EOF, but only emit EOF if the entire input buffer was consumed
-    # In last literal mode:
-    #  - end any history searches and, if they are shorter than 4 bytes, convert them to literal copies
-    #  - copy everything remaining as a literal, attempting no matches to history
-    last_literal = input_length == 0 && codec.bytes_read >= codec.write_head - LZO1X1_MIN_PROCESSING_SIZE
+    # An input length of zero signals EOF, but only emit EOF if the entire input buffer has been consumed
+    last_literal = input_length == 0
 
     # Only copy up to the minimum buffer size
     to_read = min(input_length, LZO1X1_MIN_BUFFER_SIZE)
@@ -230,73 +202,75 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     # Consume everything in the buffer if possible
     n_written = 0
     stop_byte = last_literal ? codec.write_head - 1 : codec.write_head - LZO1X1_MIN_PROCESSING_SIZE
-    while codec.bytes_read < stop_byte
+    while codec.next_read <= stop_byte
 
         # All commands are history+literal pairs except the first (literal only)
         # The last command is already taken care of above.
         # If this is the first literal, the history part is skipped.
         if state(codec) == HISTORY
             # Invariants:
-            #             (last_copy_byte)↓           ↓codec.match_start    ↓codec.write_head
-            # input_buffer: ←--**** ... ***--- ... ---**** ... ***--- ... --??? ... →
-            #                  ↑codec.copy_start                 ↑codec.bytes_read
-            bytes_remaining = stop_byte - codec.bytes_read
-            last_copy_byte = codec.copy_start + codec.bytes_read - codec.match_start
-            n_bytes_matching = match_length(codec.input_buffer, last_copy_byte+1, codec.bytes_read+1, bytes_remaining)
+            #  codec.copy_start < codec.match_start (copy can start at the very previous byte, but not the same byte as the match start)
+            #  codec.match_start < codec.next_read
+            # 1              codec.match_start
+            # ↓              ↓
+            # [??(*****......(*****??????????????????]
+            #    ↑                 ↑                 ↑
+            #    codec.copy_start  codec.next_read   codec.next_write
+            history_search_start = codec.copy_start + codec.next_read - codec.match_start
+            bytes_to_search = codec.next_write - codec.next_read
+            bytes_matching = match_length(codec.input_buffer, history_search_start, codec.next_read, bytes_to_search)
 
-            codec.bytes_read += n_bytes_matching
-            # If last literal, end the history match now no matter what
-            if last_literal || n_bytes_matching != bytes_remaining
-                codec.match_end = codec.bytes_read
+            codec.next_read += n_bytes_matching
+
+            if bytes_matching < bytes_to_search || (last_literal && bytes_matching == bytes_to_search)
+                codec.match_end = codec.next_read - 1
                 codec.state = LITERAL
             else
-                continue
+                # we need more data, so request more
+                return to_read, n_written, :ok
             end
         end
 
         if state(codec) == LITERAL
             # Invariants:
-            #                  ↓codec.copy_start      ↓codec.match_start    ↓codec.bytes_read
-            # input_buffer: ←--**** ... ***--- ... ---**** ... ***#### ... ##--- ... --??? ... →
-            #                                                    ↑codec.match_end      ↑codec.write_head
-            if last_literal
-                # If last literal, everything remaining is a literal to be copied no matter what
-                codec.bytes_read = codec.write_head # NOTE: hangs off the end of the input buffer by 1!
-                append!(codec.literal_buffer, codec.input_buffer[codec.match_end+1:codec.bytes_read-1])
+            #  codec.copy_start < codec.match_start (copy can start at the very previous byte, but not the same byte as the match start)
+            #  codec.match_start < codec.match_end - 1 (length of copy has to be at least 2)
+            #  codec.match_end < codec.next_read
+            # 1              codec.match_start codec.next_read
+            # ↓              ↓                 ↓
+            # [??(******)....(******)##########??????]
+            #    ↑                  ↑                ↑
+            #    codec.copy_start   codec.match_end  codec.next_write
+            match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, codec.next_read, stop_byte, codec.skip_trigger, codec.match_end + 1)
+            codec.next_copy_start = copy_start
+            if match_start > 0
+                codec.next_read = match_start
+                append!(codec.literal_buffer, codec.input_buffer[search_start:match_start-1])
                 codec.state = COMMAND
             else
-                bytes_remaining = stop_byte - codec.bytes_read
-                search_start = codec.bytes_read + 1
-                match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, search_start, bytes_remaining, codec.skip_trigger, codec.match_end + 1)
-
-                codec.next_copy_start = copy_start
-                if match_start > 0
-                    codec.bytes_read = match_start
-                    append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read-1])
-                    codec.state = COMMAND
-                else
-                    codec.bytes_read += bytes_remaining
-                    append!(codec.literal_buffer, codec.input_buffer[search_start:codec.bytes_read])
-                end
-
-                if match_start <= 0
-                    # no match yet means we load up the buffer again and have a go at it one more time!
-                    continue
-                end
+                codec.next_read = stop_byte + 1
+                append!(codec.literal_buffer, codec.input_buffer[search_start:stop_byte])
+                # no match yet means we need more data
+                return to_read, n_written, :ok
             end
         end
 
         if state(codec) == COMMAND
             # Invariants:
-            #                  ↓codec.copy_start        ↓codec.match_start        ↓codec.bytes_read
-            # input_buffer: ←--**** ... ***--&-- ... ---**** ... ****#### ... ####&-- ... -??? ... →
-            #                                ↑codec.next_copy_start ↑codec.match_end       ↑codec.write_head
-            # this invariant requires that codec.bytes_read be one byte past the last literal (that is, pointing to the start of the next match)
+            #  codec.copy_start < codec.match_start (copy can start at the very previous byte, but not the same byte as the match start)
+            #  codec.match_start < codec.match_end - 1 (length of copy has to be at least 2)
+            #  codec.match_end < codec.next_read
+            # 1              codec.match_start  codec.next_read
+            # ↓              ↓                  ↓
+            # [??(******)....(******)###########(????]
+            #    ↑                  ↑                ↑
+            #    codec.copy_start   codec.match_end  codec.next_write
+            # Note: this invariant requires that codec.next_read be one byte past the last literal (that is, pointing to the start of the next match)
             command = build_command(codec)
             w = encode!(output, command, n_written + 1; last_literal_length=codec.last_literals_copied)
             if w > 0
                 n_written += w
-                codec.match_start = codec.bytes_read
+                codec.match_start = codec.next_read
                 codec.copy_start = codec.next_copy_start
                 codec.match_end = 0
                 codec.next_copy_start = 0
@@ -324,7 +298,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     if last_literal
         # the flush may have been interrupted, and if it was, the above loop is not run, so we have to flush again here
         if !isempty(codec.literal_buffer)
-            state(codec) == FLUSH || throw(InputNotConsumedException(codec.bytes_read, nothing))
+            state(codec) == FLUSH || throw(InputNotConsumedException(codec.next_read, codec.next_write-1))
             n_written += flush!(output, codec.literal_buffer, n_written + 1)
             if !isempty(codec.literal_buffer)
                 # quit immediately because we ran out of output space
