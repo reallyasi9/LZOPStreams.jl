@@ -195,13 +195,13 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
     # Only copy up to the minimum buffer size
     to_read = min(input_length, LZO1X1_MIN_BUFFER_SIZE)
     if to_read > 0
-        copyto!(codec.input_buffer, codec.write_head, input, 1, to_read)
-        codec.write_head += to_read
+        copyto!(codec.input_buffer, codec.next_write, input, 1, to_read)
+        codec.next_write += to_read
     end
 
     # Consume everything in the buffer if possible
     n_written = 0
-    stop_byte = last_literal ? codec.write_head - 1 : codec.write_head - LZO1X1_MIN_PROCESSING_SIZE
+    stop_byte = last_literal ? codec.next_write - 1 : codec.next_write - LZO1X1_MIN_PROCESSING_SIZE
     while codec.next_read <= stop_byte
 
         # All commands are history+literal pairs except the first (literal only)
@@ -220,7 +220,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             bytes_to_search = codec.next_write - codec.next_read
             bytes_matching = match_length(codec.input_buffer, history_search_start, codec.next_read, bytes_to_search)
 
-            codec.next_read += n_bytes_matching
+            codec.next_read += bytes_matching
 
             if bytes_matching < bytes_to_search || (last_literal && bytes_matching == bytes_to_search)
                 codec.match_end = codec.next_read - 1
@@ -241,7 +241,8 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             # [??(******)....(******)##########??????]
             #    ↑                  ↑                ↑
             #    codec.copy_start   codec.match_end  codec.next_write
-            match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, codec.next_read, stop_byte, codec.skip_trigger, codec.match_end + 1)
+            search_start = codec.next_read
+            match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, search_start, stop_byte, codec.skip_trigger, codec.match_end + 1)
             codec.next_copy_start = copy_start
             if match_start > 0
                 codec.next_read = match_start
