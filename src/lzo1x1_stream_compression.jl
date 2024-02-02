@@ -249,7 +249,7 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
                 append!(codec.literal_buffer, codec.input_buffer[search_start:match_start-1])
                 codec.state = COMMAND
             else
-                codec.next_read = stop_byte + 1
+                codec.next_read = max(stop_byte + 1, codec.next_read)
                 append!(codec.literal_buffer, codec.input_buffer[search_start:stop_byte])
                 # no match yet means we need more data
                 return to_read, n_written, :ok
@@ -295,27 +295,44 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
 
     end
 
-    status = :ok
     if last_literal
-        # the flush may have been interrupted, and if it was, the above loop is not run, so we have to flush again here
-        if !isempty(codec.literal_buffer)
-            state(codec) == FLUSH || throw(InputNotConsumedException(codec.next_read, codec.next_write-1))
+        # At this point, I am guaranteed to have read and processed all bytes in the input buffer.
+        # codec.next_write == codec.next_read == stop_byte + 1
+        if state(codec) == HISTORY
+            # end history copy with no trailing literals
+            codec.match_end = codec.next_read - 1
+            codec.state = COMMAND
+        elseif state(codec) == LITERAL
+            # end literal copy
+            codec.state = COMMAND
+        end
+        if state(codec) == COMMAND
+            command = build_command(codec)
+            w = encode!(output, command, n_written + 1; last_literal_length=codec.last_literals_copied)
+            if w > 0
+                n_written += w
+                codec.state = FLUSH
+            else
+                # quit immediately because we ran out of output space
+                return to_read, n_written, :ok
+            end
+        end
+        if state(codec) == FLUSH
             n_written += flush!(output, codec.literal_buffer, n_written + 1)
             if !isempty(codec.literal_buffer)
                 # quit immediately because we ran out of output space
                 return to_read, n_written, :ok
             end
-            codec.state = HISTORY
         end
         w = encode!(output, END_OF_STREAM_COMMAND, n_written + 1)
         if w > 0
             n_written += w
-            status = :end
+            return to_read, n_written, :end
         end
     end
 
     # We are done with this load
-    return to_read, n_written, status
+    return to_read, n_written, :ok
 
 end
 
