@@ -241,15 +241,25 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             # [??(******)....(******)##########??????]
             #    ↑                  ↑                ↑
             #    codec.copy_start   codec.match_end  codec.next_write
+            # if a history copy ended within 4 bytes of the next_write, the algorithm will not be able to find any matches, so skip literal search and ask for more data
+            if codec.next_read > stop_byte
+                return to_read, n_written, :ok
+            end
             search_start = codec.next_read
-            match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, search_start, stop_byte, codec.skip_trigger, codec.match_end + 1)
+            # only during the last literal copy do we risk overrunning the input because stop_byte is the very last byte of the input buffer
+            if stop_byte - search_start < LZO1X1_MIN_MATCH
+                last_literal || return to_read, n_written, :ok
+                match_start = copy_start = 0
+            else
+                match_start, copy_start = find_next_match!(codec.dictionary, codec.input_buffer, search_start, stop_byte, codec.skip_trigger, codec.match_end + 1)
+            end
             codec.next_copy_start = copy_start
             if match_start > 0
                 codec.next_read = match_start
                 append!(codec.literal_buffer, codec.input_buffer[search_start:match_start-1])
                 codec.state = COMMAND
             else
-                codec.next_read = max(stop_byte + 1, codec.next_read)
+                codec.next_read = stop_byte + 1
                 append!(codec.literal_buffer, codec.input_buffer[search_start:stop_byte])
                 # no match yet means we need more data
                 return to_read, n_written, :ok
