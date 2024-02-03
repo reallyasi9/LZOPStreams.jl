@@ -564,6 +564,11 @@ end
         a = UInt8[1,2,1,2,1,2,9,8,7,6,5,4,3,2,1,0]
         c = transcode(LZOCompressorCodec, a)
         @test a == lzo_decompress(c)
+
+        # this covers a corner case where a search for the next history match in the input overran the end of the input buffer and caused a phantom match
+        a = UInt8[1,2,3,4,5,6,7,8,0,9,0,0,0,1,2,3,4,5,6,7,8,9]
+        c = transcode(LZOCompressorCodec, a)
+        @test a == lzo_decompress(c)
     end
 end
 
