@@ -31,6 +31,10 @@ import CircularArrays:
 
 using LZO_jll
 
+@static if VERSION < v"1.7"
+    include("compat.jl")
+end
+
 include("errors.jl")
 include("memory_management.jl")
 include("hashmap.jl")
