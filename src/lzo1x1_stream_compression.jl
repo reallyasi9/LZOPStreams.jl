@@ -1,11 +1,4 @@
 const LZO1X1_MIN_PROCESSING_SIZE = 20 # do not try to match in history if the remaining literal is this size or less
-const LZO1X1_MIN_MATCH = sizeof(UInt32)  # the smallest number of bytes to consider in a dictionary lookup
-
-const LZO1X1_MAX_DISTANCE = (0b11000000_00000000 - 1) % Int  # 49151 bytes, if a match starts further back in the buffer than this, it is considered a miss
-
-const LZO1X1_HASH_MAGIC_NUMBER = 0x1824429D
-const LZO1X1_HASH_BITS = 13  # The number of bits that are left after shifting in the hash calculation
-
 const LZO1X1_MIN_BUFFER_SIZE = LZO1X1_MAX_DISTANCE + LZO1X1_MIN_MATCH
 
 @enum MatchingState begin
@@ -83,16 +76,6 @@ The state can be one of:
 """
 state(codec::LZO1X1CompressorCodec) = codec.state
 
-# function TranscodingStreams.minoutsize(codec::LZO1X1CompressorCodec, input::Memory)
-#     # The worst-case scenario is a super-long literal, where the input has to be emitted in
-#     # its entirety along with the output buffer plus the appropriate commands to start a
-#     # long literal or match and end the stream.
-#     # If in the middle of a history write, then the worst-case scenario is if the history
-#     # copy command ends the copy and the rest of the input has to be written as a literal.
-#     cl = codec.copy_length ÷ 255 + 4
-#     # COPY_COMMAND + LITERAL_CMD + LITERAL_RUN + LITERAL_REMAINDER + LITERAL + EOS
-#     return cl + 1 + length(input) ÷ 255 + 1 + length(input) + 3
-# end
 
 function TranscodingStreams.expectedsize(codec::LZO1X1CompressorCodec, input::Memory)
     # Usually around 2.4:1 compression ratio with a minimum of 24 bytes (see https://morotti.github.io/lzbench-web)
