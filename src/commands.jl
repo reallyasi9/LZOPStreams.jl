@@ -122,7 +122,7 @@ If the previous command was a long literal copy (of four of more bytes), then th
 !!! note
     LZO1X checks for historical matches based on four byte runs, so a historical copy of two bytes can only occur if the two bytes that follow also match, in which case the run is at least four bytes long. The reference LZO1X algorithm used in `liblzo2` is a greedy algorithm, so it will only ever encode a two byte historical copy in the special case where the first two bytes of a sequence repeat exactly once and are followed by a non-matching byte.
 
-See also: [`decode`](@ref) and [`encode`](@ref).
+See also: [`decode`](@ref) and [`encode!`](@ref).
 """
 struct CommandPair
     first_literal::Bool
@@ -304,6 +304,21 @@ function compute_run_remainder(n::Integer, bits::Integer)
     end
 end
 
+"""
+    decode(::Type{CommandPair}, data, [start_index=1; first_literal=false, last_literal_length=0])::Tuple{Int, CommandPair}
+
+Decode a CommandPair from a byte array `data` starting at `start_index`.
+
+Returns a tuple of the number of bytes read from `data` and the decoded CommandPair.
+
+## Positional arguments
+- `data`: a linear-indexed collection of `UInt8` values that has `getindex(data, ::Integer)` and `lastindex(data)` methods defined.
+- `start_index::Integer = 1`: where in `data` to begin decoding.
+
+## Keyword arguments
+- `first_literal::Bool = false`: if `true`, the decoding algorithm will ignore the history copy and use the special encoding for the first literal of the stream.
+- `last_literal_length::Integer = 0`: if 0-3, apply special decoding for the history copy to allow short copies.
+"""
 function decode(::Type{CommandPair}, data, start_index::Integer = 1; first_literal::Bool = false, last_literal_length::Integer = 0)
     if !first_literal
         n_read, eos, lookback, copy_length, post_copy_literals = decode_history_copy(data, start_index, last_literal_length)
@@ -404,7 +419,20 @@ function decode_literal_copy(data, start_index::Integer=1, first_literal::Bool=f
     end
 end
 
+"""
+    encode!(data, cp::CommandPair, [start_index = 1; last_literal_length = 0])::Int
 
+Encode CommandPair `cp` to byte array `data`.
+
+Returns the number of bytes written to `data` or zero if the encoding failed.
+
+## Positional arguments
+- `data`: a linear-indexed collection of `UInt8` values that has `setindex!(data, ::Integer)` and `lastindex(data)` methods defined.
+- `start_index::Integer = 1`: where in `data` to begin decoding.
+
+## Keyword arguments
+- `last_literal_length::Integer = 0`: if 0-3, apply special encoding for the history copy to allow short copies.
+"""
 function encode!(data, cp::CommandPair, start_index::Integer=1; last_literal_length::Integer=0)
     _validate_commands(cp, last_literal_length)
     n_written = 0
