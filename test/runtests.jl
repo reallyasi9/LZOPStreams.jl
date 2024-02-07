@@ -1,6 +1,7 @@
 using CodecLZO
 using TestItemRunner
 
+
 @testitem "HashMap setindex!, getindex, replace!, and empty!" begin
     h = CodecLZO.HashMap{UInt8,Int}(8, UInt8(2^8 - 45)) # that's prime
     @test h[0x01] == 0
@@ -559,6 +560,7 @@ end
 end
 
 @testitem "Corner case compression round trip" begin
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
     let 
         # this covers a corner case where the command encoding the run length of the last literal called for one too many bytes
         a = UInt8[1,2,1,2,1,2,9,8,7,6,5,4,3,2,1,0]
@@ -574,6 +576,7 @@ end
 
 @testitem "Canterbury Corpus compression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyCorpus"
@@ -588,6 +591,7 @@ end
 
 @testitem "Calgary Corpus compression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CalgaryCorpus"
@@ -602,6 +606,7 @@ end
 
 @testitem "Canterbury Artificial Corpus compression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyArtificialCorpus"
@@ -616,6 +621,7 @@ end
 
 @testitem "Canterbury Large Corpus compression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyLargeCorpus"
@@ -630,6 +636,7 @@ end
 
 @testitem "Canterbury Miscellaneous Corpus compression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyMiscellaneousCorpus"
@@ -644,6 +651,7 @@ end
 
 @testitem "Canterbury Corpus decompression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyCorpus"
@@ -657,6 +665,7 @@ end
 
 @testitem "Calgary Corpus decompression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CalgaryCorpus"
@@ -670,6 +679,7 @@ end
 
 @testitem "Canterbury Artificial Corpus decompression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyArtificialCorpus"
@@ -683,6 +693,7 @@ end
 
 @testitem "Canterbury Large Corpus decompression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyLargeCorpus"
@@ -696,6 +707,7 @@ end
 
 @testitem "Canterbury Miscellaneous Corpus decompression round trip" begin
     using LazyArtifacts
+    import CodecLZO.LZO: lzo_compress, lzo_decompress
 
     let 
         artifact_path = artifact"CanterburyMiscellaneousCorpus"
