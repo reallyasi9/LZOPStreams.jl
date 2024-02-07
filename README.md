@@ -57,21 +57,31 @@ LZO1X_1, as implemented by liblzo2, is not compatible with streaming for two rea
 That being said, this module does export functions that directly call the liblzo2 versions of the 1X1 compression and decompression algorithms:
 
 ```julia
+using CodecLZO.LZO: lzo_compress, lzo_compress!, unchecked_lzo_compress!, lzo_decompress, lzo_decompress!, unchecked_lzo_decompress!
+
+# compress to a new Vector{UInt8}
 compressed = lzo_compress(text)
 
+# compress in place, growing the destination as necessary
 destination = UInt8[]
-lzo_compress!(destination, text) # compresses in place, growing the destination as necessary
+lzo_compress!(destination, text)
 @assert destination == compressed
-n = unchecked_lzo_compress!(destination, text) # compresses in place without resizing the destination, throwing a BoundsError if the compressed data overruns the destination
+
+# compress in place, throwing BoundsError if the compressed data does not fit
+n = unchecked_lzo_compress!(destination, text)
 resize!(destination, n)
 @assert destination == compressed
 
+# decompress to a new Vector{UInt8}
 decompressed = lzo_decompress(compressed)
 @assert decompressed == Vector{UInt8}(text)
 
+# decompress in place, growing the destination as necessary
 destination = UInt8[]
 lzo_decompress!(destination, compressed)
 @assert destination == decompressed
+
+# decompress in place, throwing BoundsError if the decompressed data does not fit
 n = unchecked_lzo_decompress!(destination, text)
 resize!(destination, n)
 @assert destination == decompressed

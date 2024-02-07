@@ -10,5 +10,5 @@ Documentation for [CodecLZO](https://github.com/reallyasi9/CodecLZO.jl).
 ```
 
 ```@autodocs
-Modules = [CodecLZO]
+Modules = [CodecLZO,CodecLZO.LZO]
 ```
