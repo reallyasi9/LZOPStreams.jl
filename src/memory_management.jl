@@ -127,6 +127,7 @@ end
 
 function Base.append!(dest::AbstractVector{UInt8}, src::Memory, start_index::Integer = 1)
     to_copy = length(src) - start_index + 1
+    to_copy <= 0 && return dest
     back = length(dest) + 1
     resize!(dest, length(dest) + to_copy)
     @inbounds unsafe_copyto!(pointer(dest, back), pointer(src, start_index), to_copy)

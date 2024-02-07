@@ -4,7 +4,7 @@
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://reallyasi9.github.io/CodecLZO.jl/dev/)
 [![Build Status](https://github.com/reallyasi9/CodecLZO.jl/actions/workflows/CI.yml/badge.svg?branch=development)](https://github.com/reallyasi9/CodecLZO.jl/actions/workflows/CI.yml?query=branch%3Adevelopment)
 
-A Codec module for TranscodingStreams that implements a version of LZO. If you have the choice, choose CodecLZ4 or CodecSnappy over this module.
+A Codec module for TranscodingStreams that implements a version of LZO. If you have the choice, choose CodecLZ4 or CodecZstd over this module.
 
 ## Synopsis
 
@@ -40,17 +40,17 @@ close(stream)
 
 ## Description
 
-If you need to compress and decompress data in a stream and are starting from scratch, _do not use LZO_. Use the more modern CodecLZ4 or CodecZstd modules. LZO is not designed or optimized for streaming, and is dominated in speed by LZ4 and in compression ratio by zstd.
+If you need to compress and decompress data in a stream and are starting from scratch, _do not use LZO_. Use the more modern CodecLZ4 or CodecZstd modules. LZO is _not_ designed or optimized for streaming.
 
 LZO (Lempel-Ziv-Oberhumer) is an LZ77-style compression algorithm in that it encodes a given set of bytes as a sequence of commands that represent either literal copies of data (e.g., "copy the next N bytes directly to the end of the output") or copies from the output history (e.g., "go back K bytes in the output and copy N bytes from there to the end of the output"). This simple algorithm is remarkably good at compressing things like natural language and computer programs (both source code and compiled binary code), and can be decompressed extremely quickly and with little memory overhead.
 
-LZO as implemented in liblzo2 is actually XXX separate algorithms: some are mutually compatable (i.e., data compressed with one algorithm can be decompressed with another), some are not; some are very fast, some are not; some are memory-efficient, some are not. This module attempts to implement a version of the "1X1" algorithm. This is the algorithm that the LZO authors recommend, and is the default algorithm used by the `lzop` program. The major features of this algorithm are:
-  - A maximum lookback of XXX bytes;
-  - A 4-byte minimum for history matches;
+LZO as implemented in liblzo2 is actually 37 separate algorithms: some are mutually compatable (i.e., data compressed with one algorithm can be decompressed with another), some are not; some are very fast, some are not; some are memory-efficient, some are not. This module attempts to implement a version of the "1X_1" algorithm. This is the algorithm that the LZO authors recommend, and is the default algorithm used by the `lzop` program. The major features of this algorithm are:
+  - A maximum lookback distance of 49151 bytes;
+  - A 4-byte minimum history match;
   - A history search with a linearly increasing skip distance as more misses are found;
   - A special encoding of literal copy commands and history copy commands that favors short history copies separated by literal copies of 4 or fewer bytes.
 
-LZO 1X1, as implemented by liblzo2, is not compatible with streaming for two reasons:
+LZO1X_1, as implemented by liblzo2, is not compatible with streaming for two reasons:
   1. The entire input must be available all at once to the compression algorithm. Nothing is gained by streaming the input because the entire input must be buffered before compression can begin.
   2. The output size cannot be determined from a given input _a priori_ by the decompression algorithm. Either an infinite output buffer is required, or the algorithm has to repeatedly start over with a larger output buffer once an overrun is detected.
 
