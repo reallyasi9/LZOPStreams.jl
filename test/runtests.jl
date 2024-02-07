@@ -600,7 +600,7 @@ end
     end
 end
 
-@testitem "Centerbury Artificial Corpus compression round trip" begin
+@testitem "Canterbury Artificial Corpus compression round trip" begin
     using LazyArtifacts
 
     let 
@@ -638,6 +638,151 @@ end
             c = transcode(LZOCompressorCodec, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
             @test a == lzo_decompress(c)
+        end
+    end
+end
+
+@testitem "Canterbury Corpus decompression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = lzo_compress(a)
+            @test a == transcode(LZODecompressorCodec, c)
+        end
+    end
+end
+
+@testitem "Calgary Corpus decompression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CalgaryCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = lzo_compress(a)
+            @test a == transcode(LZODecompressorCodec, c)
+        end
+    end
+end
+
+@testitem "Canterbury Artificial Corpus decompression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyArtificialCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = lzo_compress(a)
+            @test a == transcode(LZODecompressorCodec, c)
+        end
+    end
+end
+
+@testitem "Canterbury Large Corpus decompression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyLargeCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = lzo_compress(a)
+            @test a == transcode(LZODecompressorCodec, c)
+        end
+    end
+end
+
+@testitem "Canterbury Miscellaneous Corpus decompression round trip" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyMiscellaneousCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            a = read(fn)
+            c = lzo_compress(a)
+            @test a == transcode(LZODecompressorCodec, c)
+        end
+    end
+end
+
+@testitem "Canterbury Corpus stream-through" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            truth = read(fn)
+            open(fn, "r") do io
+                stream = LZODecompressorStream(LZOCompressorStream(io))
+                check = read(stream)
+                @test check == truth
+            end
+        end
+    end
+end
+
+@testitem "Calgary Corpus stream-through" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CalgaryCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            truth = read(fn)
+            open(fn, "r") do io
+                stream = LZODecompressorStream(LZOCompressorStream(io))
+                check = read(stream)
+                @test check == truth
+            end
+        end
+    end
+end
+
+@testitem "Canterbury Artificial Corpus Corpus stream-through" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyArtificialCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            truth = read(fn)
+            open(fn, "r") do io
+                stream = LZODecompressorStream(LZOCompressorStream(io))
+                check = read(stream)
+                @test check == truth
+            end
+        end
+    end
+end
+
+@testitem "Canterbury Large Corpus stream-through" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyLargeCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            truth = read(fn)
+            open(fn, "r") do io
+                stream = LZODecompressorStream(LZOCompressorStream(io))
+                check = read(stream)
+                @test check == truth
+            end
+        end
+    end
+end
+
+@testitem "Canterbury Miscellaneous Corpus stream-through" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyMiscellaneousCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            truth = read(fn)
+            open(fn, "r") do io
+                stream = LZODecompressorStream(LZOCompressorStream(io))
+                check = read(stream)
+                @test check == truth
+            end
         end
     end
 end

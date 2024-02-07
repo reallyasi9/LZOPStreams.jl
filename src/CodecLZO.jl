@@ -4,9 +4,9 @@ export
     LZO1X1CompressorCodec,
     LZOCompressorCodec,
     LZOCompressorStream,
-    # LZO1X1DecompressorCodec,
-    # LZODecompressorCodec,
-    # LZODecompressorStream,
+    LZO1X1DecompressorCodec,
+    LZODecompressorCodec,
+    LZODecompressorStream,
     LZO1X1FastCompressorCodec,
     LZOFastCompressorCodec,
     LZOFastCompressorStream,
@@ -41,7 +41,7 @@ include("hashmap.jl")
 include("commands.jl")
 include("lzo1x1.jl")
 include("lzo1x1_stream_compression.jl")
-# include("lzo1x1_stream_decompression.jl")
+include("lzo1x1_stream_decompression.jl")
 include("lzo1x1_fast_compression.jl")
 include("lzo1x1_fast_decompression.jl")
 

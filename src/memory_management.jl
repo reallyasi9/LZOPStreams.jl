@@ -55,11 +55,11 @@ end
 """
     copyto!(dest::CircularVector, do, src::Memory, so, N)
 
-Copy `N` elements from collection `src` start at the linear index `so` to array `dest` starting at the index `do`. Return `dest`.
+Copy `N` elements from collection `src` starting at the linear index `so` to array `dest` starting at the index `do`. Return `dest`.
 
 Because `CircularVector`s have circular boundary conditions on the indices, the linear index `do` may be negative, zero, or greater than `lastindex(dest)`, and the number of elements copied `N` may be greater than `length(dest)`.
 """
-function Base.copyto!(dest::CircularVector, doffs::Integer, src::Memory, soffs::Integer, n::Integer)
+function Base.copyto!(dest::CircularVector{UInt8}, doffs::Integer, src::Memory, soffs::Integer, n::Integer)
     n == 0 && return dest
     soffs = n > length(dest) ? soffs + n - length(dest) : soffs
     n = min(n, length(dest))
@@ -73,6 +73,68 @@ end
 
 
 """
+    copyto!(dest::CircularVector{T}, do, src::AbstractVector{T}, so, N)
+
+Copy `N` elements from collection `src` starting at the linear index `so` to array `dest` starting at the index `do`. Return `dest`.
+
+Because `CircularVector`s have circular boundary conditions on the indices, the linear index `do` may be negative, zero, or greater than `lastindex(dest)`, and the number of elements copied `N` may be greater than `length(dest)`.
+"""
+function Base.copyto!(dest::CircularVector{T}, doffs::Integer, src::AbstractVector{T}, soffs::Integer, n::Integer) where {T}
+    n == 0 && return dest
+    soffs = n > length(dest) ? soffs + n - length(dest) : soffs
+    n = min(n, length(dest))
+    offset = 0
+    while offset < n
+        dest[doffs + offset] = src[soffs + offset]
+        offset += 1
+    end
+    dest
+end
+
+"""
+    copyto!(dest::Memory, do, src::CircularVector, so, N)
+
+Copy `N` elements from collection `src` starting at the linear index `so` to array `dest` starting at the index `do`. Return `dest`.
+
+Because `CircularVector`s have circular boundary conditions on the indices, the linear index `so` may be negative, zero, or greater than `lastindex(src)`, and the number of elements copied `N` may be greater than `length(src)`.
+"""
+function Base.copyto!(dest::Memory, doffs::Integer, src::CircularVector{UInt8}, soffs::Integer, n::Integer)
+    n == 0 && return dest
+    offset = 0
+    while offset < n
+        dest[doffs + offset] = src[soffs + offset]
+        offset += 1
+    end
+    dest
+end
+
+"""
+    copyto!(dest::CircularVector, do, src::CircularVector, so, N)
+
+Copy `N` elements from collection `src` starting at the linear index `so` to array `dest` starting at the index `do`. Return `dest`.
+
+Because `CircularVector`s have circular boundary conditions on the indices, the linear indices `do` and `so` may be negative, zero, or greater than the last indices of `dest` and `src`, respective, and the number of elements copied `N` may be greater than the lengths of either.
+"""
+function Base.copyto!(dest::CircularVector, doffs::Integer, src::CircularVector, soffs::Integer, n::Integer)
+    n == 0 && return dest
+    offset = 0
+    while offset < n
+        dest[doffs + offset] = src[soffs + offset]
+        offset += 1
+    end
+    dest
+end
+
+function Base.append!(dest::AbstractVector{UInt8}, src::Memory, start_index::Integer = 1)
+    to_copy = length(src) - start_index + 1
+    back = length(dest) + 1
+    resize!(dest, length(dest) + to_copy)
+    @inbounds unsafe_copyto!(pointer(dest, back), pointer(src, start_index), to_copy)
+    return dest
+end
+
+
+"""
     maxcopy!(dest, start_index, src)::Int
 
 Copy as much of `src` into `dest` starting at index `start_index` as possible.
@@ -82,7 +144,7 @@ Requires `lastindex(dest)`, `length(src)`, and `copyto!(dest, start_index, src, 
 Returns the number of bytes copied.
 """
 function maxcopy!(dest, start_index, src)
-    n = min(lastindexh(dest) - start_index + 1, length(src))
+    n = min(lastindex(dest) - start_index + 1, length(src))
     @inbounds copyto!(dest, start_index, src, 1, n)
     return n
 end
