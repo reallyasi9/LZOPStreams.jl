@@ -564,12 +564,12 @@ end
     let 
         # this covers a corner case where the command encoding the run length of the last literal called for one too many bytes
         a = UInt8[1,2,1,2,1,2,9,8,7,6,5,4,3,2,1,0]
-        c = transcode(LZOCompressorCodec, a)
+        c = transcode(LZOCompressor, a)
         @test a == lzo_decompress(c)
 
         # this covers a corner case where a search for the next history match in the input overran the end of the input buffer and caused a phantom match
         a = UInt8[1,2,3,4,5,6,7,8,0,9,0,0,0,1,2,3,4,5,6,7,8,9]
-        c = transcode(LZOCompressorCodec, a)
+        c = transcode(LZOCompressor, a)
         @test a == lzo_decompress(c)
     end
 end
@@ -582,7 +582,7 @@ end
         artifact_path = artifact"CanterburyCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = transcode(LZOCompressorCodec, a)
+            c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
             @test a == lzo_decompress(c)
         end
@@ -597,7 +597,7 @@ end
         artifact_path = artifact"CalgaryCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = transcode(LZOCompressorCodec, a)
+            c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
             @test a == lzo_decompress(c)
         end
@@ -612,7 +612,7 @@ end
         artifact_path = artifact"CanterburyArtificialCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = transcode(LZOCompressorCodec, a)
+            c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
             @test a == lzo_decompress(c)
         end
@@ -627,7 +627,7 @@ end
         artifact_path = artifact"CanterburyLargeCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = transcode(LZOCompressorCodec, a)
+            c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
             @test a == lzo_decompress(c)
         end
@@ -642,7 +642,7 @@ end
         artifact_path = artifact"CanterburyMiscellaneousCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = transcode(LZOCompressorCodec, a)
+            c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
             @test a == lzo_decompress(c)
         end
@@ -658,7 +658,7 @@ end
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
             c = lzo_compress(a)
-            @test a == transcode(LZODecompressorCodec, c)
+            @test a == transcode(LZODecompressor, c)
         end
     end
 end
@@ -672,7 +672,7 @@ end
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
             c = lzo_compress(a)
-            @test a == transcode(LZODecompressorCodec, c)
+            @test a == transcode(LZODecompressor, c)
         end
     end
 end
@@ -686,7 +686,7 @@ end
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
             c = lzo_compress(a)
-            @test a == transcode(LZODecompressorCodec, c)
+            @test a == transcode(LZODecompressor, c)
         end
     end
 end
@@ -700,7 +700,7 @@ end
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
             c = lzo_compress(a)
-            @test a == transcode(LZODecompressorCodec, c)
+            @test a == transcode(LZODecompressor, c)
         end
     end
 end
@@ -714,7 +714,7 @@ end
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
             c = lzo_compress(a)
-            @test a == transcode(LZODecompressorCodec, c)
+            @test a == transcode(LZODecompressor, c)
         end
     end
 end

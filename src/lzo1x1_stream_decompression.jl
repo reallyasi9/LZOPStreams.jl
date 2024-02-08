@@ -48,9 +48,9 @@ mutable struct LZO1X1DecompressorCodec <: TranscodingStreams.Codec
     )
 end
 
-const LZODecompressorCodec = LZO1X1DecompressorCodec
+const LZODecompressor = LZO1X1DecompressorCodec
 const LZODecompressorStream{S} = TranscodingStream{LZO1X1DecompressorCodec,S} where {S<:IO}
-LZODecompressorStream(stream::IO, kwargs...) = TranscodingStream(LZODecompressorCodec(), stream; kwargs...)
+LZODecompressorStream(stream::IO, kwargs...) = TranscodingStream(LZODecompressor(), stream; kwargs...)
 
 """
     state(codec)::MatchingState
