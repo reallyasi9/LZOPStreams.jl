@@ -560,23 +560,23 @@ end
 end
 
 @testitem "Corner case compression round trip" begin
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
     let 
         # this covers a corner case where the command encoding the run length of the last literal called for one too many bytes
         a = UInt8[1,2,1,2,1,2,9,8,7,6,5,4,3,2,1,0]
         c = transcode(LZOCompressor, a)
-        @test a == lzo_decompress(c)
+        @test a == LibLZO.decompress(c)
 
         # this covers a corner case where a search for the next history match in the input overran the end of the input buffer and caused a phantom match
         a = UInt8[1,2,3,4,5,6,7,8,0,9,0,0,0,1,2,3,4,5,6,7,8,9]
         c = transcode(LZOCompressor, a)
-        @test a == lzo_decompress(c)
+        @test a == LibLZO.decompress(c)
     end
 end
 
 @testitem "Canterbury Corpus compression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyCorpus"
@@ -584,14 +584,14 @@ end
             a = read(fn)
             c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
-            @test a == lzo_decompress(c)
+            @test a == LibLZO.decompress(c)
         end
     end
 end
 
 @testitem "Calgary Corpus compression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CalgaryCorpus"
@@ -599,14 +599,14 @@ end
             a = read(fn)
             c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
-            @test a == lzo_decompress(c)
+            @test a == LibLZO.decompress(c)
         end
     end
 end
 
 @testitem "Canterbury Artificial Corpus compression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyArtificialCorpus"
@@ -614,14 +614,14 @@ end
             a = read(fn)
             c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
-            @test a == lzo_decompress(c)
+            @test a == LibLZO.decompress(c)
         end
     end
 end
 
 @testitem "Canterbury Large Corpus compression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyLargeCorpus"
@@ -629,14 +629,14 @@ end
             a = read(fn)
             c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
-            @test a == lzo_decompress(c)
+            @test a == LibLZO.decompress(c)
         end
     end
 end
 
 @testitem "Canterbury Miscellaneous Corpus compression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyMiscellaneousCorpus"
@@ -644,20 +644,20 @@ end
             a = read(fn)
             c = transcode(LZOCompressor, a)
             @test length(c) <= first(CodecLZO.compute_run_remainder(length(a)-3, 4)) + length(a) + length(CodecLZO.END_OF_STREAM_DATA)
-            @test a == lzo_decompress(c)
+            @test a == LibLZO.decompress(c)
         end
     end
 end
 
 @testitem "Canterbury Corpus decompression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = lzo_compress(a)
+            c = LibLZO.compress(a)
             @test a == transcode(LZODecompressor, c)
         end
     end
@@ -665,13 +665,13 @@ end
 
 @testitem "Calgary Corpus decompression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CalgaryCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = lzo_compress(a)
+            c = LibLZO.compress(a)
             @test a == transcode(LZODecompressor, c)
         end
     end
@@ -679,13 +679,13 @@ end
 
 @testitem "Canterbury Artificial Corpus decompression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyArtificialCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = lzo_compress(a)
+            c = LibLZO.compress(a)
             @test a == transcode(LZODecompressor, c)
         end
     end
@@ -693,13 +693,13 @@ end
 
 @testitem "Canterbury Large Corpus decompression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyLargeCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = lzo_compress(a)
+            c = LibLZO.compress(a)
             @test a == transcode(LZODecompressor, c)
         end
     end
@@ -707,13 +707,13 @@ end
 
 @testitem "Canterbury Miscellaneous Corpus decompression round trip" begin
     using LazyArtifacts
-    import CodecLZO.LZO: lzo_compress, lzo_decompress
+    import LibLZO
 
     let 
         artifact_path = artifact"CanterburyMiscellaneousCorpus"
         for fn in readdir(artifact_path; sort=true, join=true)
             a = read(fn)
-            c = lzo_compress(a)
+            c = LibLZO.compress(a)
             @test a == transcode(LZODecompressor, c)
         end
     end

@@ -17,11 +17,12 @@ import TranscodingStreams:
 import CircularArrays:
     CircularVector
 
+import LibLZO
+
 @static if VERSION < v"1.7"
     include("compat.jl")
 end
 
-include("LZO.jl") # until this can be spun off into its own package
 include("errors.jl")
 include("memory_management.jl")
 include("hashmap.jl")
