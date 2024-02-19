@@ -239,11 +239,11 @@ function TranscodingStreams.process(codec::LZO1X1CompressorCodec, input::Memory,
             codec.next_copy_start = copy_start
             if match_start > 0
                 codec.next_read = match_start
-                append!(codec.literal_buffer, codec.input_buffer[search_start:match_start-1])
+                append!(codec.literal_buffer, @view(codec.input_buffer[search_start:match_start-1]))
                 codec.state = COMMAND
             else
                 codec.next_read = stop_byte + 1
-                append!(codec.literal_buffer, codec.input_buffer[search_start:stop_byte])
+                append!(codec.literal_buffer, @view(codec.input_buffer[search_start:stop_byte]))
                 # no match yet means we need more data
                 return to_read, n_written, :ok
             end

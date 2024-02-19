@@ -65,46 +65,4 @@ LZO1X1, as implemented by liblzo2, is not compatible with streaming for two reas
 
 That being said, the liblzo2 version of the algorithm still outperforms this pure Julia implementation by a factor of 20 in terms of speed and a factor of 10-100 in terms of memory usage. The only advantage of streaming LZO1X1 using this module is that it _sometimes_ allows partial processing of streamed data on memory-limited systems.
 
-This module does export functions that directly call the liblzo2 versions of the 1X1 compression and decompression algorithms:
-
-```julia
-using CodecLZO.LZO: lzo_compress, lzo_compress!, unsafe_lzo_compress!, lzo_decompress, lzo_decompress!, unsafe_lzo_decompress!
-
-# compress to a new Vector{UInt8}
-compressed = lzo_compress(text)
-
-# compress in place, growing the destination as necessary
-destination = UInt8[]
-lzo_compress!(destination, text)
-@assert destination == compressed
-
-# compress in place, throwing BoundsError if the compressed data does not fit
-n = unsafe_lzo_compress!(destination, text)
-resize!(destination, n)
-@assert destination == compressed
-
-# decompress to a new Vector{UInt8}
-decompressed = lzo_decompress(compressed)
-@assert decompressed == Vector{UInt8}(text)
-
-# decompress in place, growing the destination as necessary
-destination = UInt8[]
-lzo_decompress!(destination, compressed)
-@assert destination == decompressed
-
-# decompress in place, throwing BoundsError if the decompressed data does not fit
-n = unsafe_lzo_decompress!(destination, compressed)
-resize!(destination, n)
-@assert destination == decompressed
-```
-Because of necessary differences between the streaming version of the LZO1X1 algorithm and the in-place version used by liblzo2, the two methods may not produce the same compressed output. However, the compression ratios achieved by the two versions are similar (with the streaming version typically achieving 1-2% better compression), and the encoded data are compatible between the two as demonstrated:
-
-```julia
-lzo_compressed = lzo_compress(text)
-stream_decompressed = transcode(LZODecompressor, lzo_compressed)
-@assert String(stream_decompressed) == text
-
-stream_compressed = transcode(LZOCompressor, text)
-lzo_decompressed = lzo_decompress(stream_compressed)
-@assert String(lzo_decompressed) == text
-```
+Because of necessary differences between the streaming version of the LZO1X1 algorithm and the in-place version used by liblzo2, the two algorithms may not produce the same compressed output. However, the compression ratios achieved by this package are similar to those achieved by liblzo2 (with the streaming version typically achieving 1-2% better compression), and the encoded data are compatible between the two.
