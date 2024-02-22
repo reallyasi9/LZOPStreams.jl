@@ -132,6 +132,11 @@ struct CommandPair
     literal_length::Int
 end
 
+# overriding command pair constructor
+function CommandPair(cp::CommandPair; first_literal::Bool=cp.first_literal, eos::Bool=cp.eos, lookback::UInt16=cp.lookback, copy_length::Int=cp.copy_length, literal_length::Int=cp.literal_length)
+    return CommandPair(first_literal, eos, lookback, copy_length, literal_length)
+end
+
 const END_OF_STREAM_DATA = UInt8[0b00010001, 0b00000000, 0b00000000]
 const END_OF_STREAM_COMMAND = CommandPair(false, true, END_OF_STREAM_LOOKBACK, END_OF_STREAM_COPY_LENGTH, 0)
 const NULL_COMMAND = CommandPair(false, false, 0, 0, 0)

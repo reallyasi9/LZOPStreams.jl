@@ -799,4 +799,36 @@ end
     end
 end
 
+@testitem "Canterbury Corpus fast stream-through" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            truth = read(fn)
+            open(fn, "r") do io
+                stream = LZOFastDecompressorStream(LZOFastCompressorStream(io))
+                check = read(stream)
+                @test check == truth
+            end
+        end
+    end
+end
+
+@testitem "Canterbury Large Corpus fast stream-through" begin
+    using LazyArtifacts
+
+    let 
+        artifact_path = artifact"CanterburyLargeCorpus"
+        for fn in readdir(artifact_path; sort=true, join=true)
+            truth = read(fn)
+            open(fn, "r") do io
+                stream = LZOFastDecompressorStream(LZOFastCompressorStream(io))
+                check = read(stream)
+                @test check == truth
+            end
+        end
+    end
+end
+
 @run_package_tests verbose = true

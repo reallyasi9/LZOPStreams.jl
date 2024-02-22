@@ -6,7 +6,13 @@ export
     LZOCompressorStream,
     LZO1X1DecompressorCodec,
     LZODecompressor,
-    LZODecompressorStream
+    LZODecompressorStream,
+    LZO1X1FastCompressorCodec,
+    LZOFastCompressor,
+    LZOFastCompressorStream,
+    LZO1X1FastDecompressorCodec,
+    LZOFastDecompressor,
+    LZOFastDecompressorStream
 
 import TranscodingStreams:
     TranscodingStreams,
@@ -17,7 +23,11 @@ import TranscodingStreams:
 import CircularArrays:
     CircularVector
 
-import LibLZO
+import LibLZO:
+    max_compressed_length,
+    unsafe_compress!,
+    decompress,
+    LZO1X_1
 
 @static if VERSION < v"1.7"
     include("compat.jl")
@@ -30,5 +40,7 @@ include("commands.jl")
 include("lzo1x1.jl")
 include("lzo1x1_stream_compression.jl")
 include("lzo1x1_stream_decompression.jl")
+include("lzo1x1_fast_compression.jl")
+include("lzo1x1_fast_decompression.jl")
 
 end
