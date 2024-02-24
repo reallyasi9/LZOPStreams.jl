@@ -29,12 +29,16 @@ import LibLZO:
     decompress,
     LZO1X_1
 
+import Libz:
+    adler32, crc32
+
 @static if VERSION < v"1.7"
     include("compat.jl")
 end
 
 include("errors.jl")
 include("memory_management.jl")
+include("lzop_block.jl")
 include("hashmap.jl")
 include("commands.jl")
 include("lzo1x1.jl")
