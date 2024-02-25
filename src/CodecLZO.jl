@@ -38,6 +38,7 @@ end
 
 include("errors.jl")
 include("memory_management.jl")
+include("lzop_filter.jl")
 include("lzop_block.jl")
 include("hashmap.jl")
 include("commands.jl")

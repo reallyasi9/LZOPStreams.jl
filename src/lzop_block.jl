@@ -1,77 +1,9 @@
-const ADLER32_D=0x00000001
-const ADLER32_C=0x00000002
-const STDIN=0x00000004
-const STDOUT=0x00000008
-const NAME_DEFAULT=0x00000010
-const DOSISH=0x00000020
-const H_EXTRA_FIELD=0x00000040
-const H_GMTDIFF=0x00000080
-const CRC32_D=0x00000100
-const CRC32_C=0x00000200
-const MULTIPART=0x00000400
-const H_FILTER=0x00000800
-const H_CRC32=0x00001000
-const H_PATH=0x00002000
+const BLOCK_SIZE = 256*1024
+const MAX_BLOCK_SIZE = 64*1024*1024
 
-struct LZOPBlockHeader
-    uncompressed_length::UInt32
-    compressed_length::UInt32
-    adler32_uncompressed::UInt32
-    crc32_uncompressed::UInt32
-    adler32_compressed::UInt32
-    crc32_compressed::UInt32
-
-    options::UInt32
-    no_compression::Bool
-    eos::Bool
-end
-
-function LZOPBlockHeader(uncompressed_data, compressed_data; options::UInt32=0x00000000)
-    uncompressed_length = length(uncompressed_data) % UInt32
-
-    # final block has length of 0 and signals end of stream
-    if uncompressed_length == 0
-        return LZOPBlockHeader(0, 0, 0, 0, 0, 0, options, true, true)
-    end
-
-    compressed_length = length(compressed_data) % UInt32
-
-    # if compressing does not help, write out the uncompressed data instead
-    # these two values being equal is a switch for other writes that follow
-    no_compression = compressed_length >= uncompressed_length
-    if no_compression
-        compressed_length = uncompressed_length
-    end
-
-    # uncompressed checksum(s) (optional)
-    adler32_uncompressed = 0x00000001
-    if (options & ADLER32_D) != 0
-        # Note: the initial value for Adler32 is 1, not 0 as defined in Libz.jl
-        adler32_uncompressed = adler32(0x00000001, pointer(uncompressed_data), uncompressed_length)
-    end
-    crc32_uncompressed = 0x00000000
-    if (options & CRC32_D) != 0
-        crc32_uncompressed = crc32(0x00000000, pointer(uncompressed_data), uncompressed_length)
-    end
-
-    adler32_compressed = 0x00000001
-    crc32_compressed = 0x00000000
-    if !no_compression
-        # compressed checksum(s) (optional, and only if compression helped)
-        if (options & ADLER32_C) != 0
-            # Note: the initial value for Adler32 is 1, not 0 as defined in Libz.jl
-            adler32_compressed = adler32(0x00000001, pointer(compressed_data), compressed_length)
-        end
-        if (options & CRC32_C) != 0
-            crc32_compressed = crc32(0x00000000, pointer(compressed_data), compressed_length)
-        end
-    end
-
-    return LZOPBlockHeader(uncompressed_length, compressed_length, adler32_uncompressed, crc32_uncompressed, adler32_compressed, crc32_compressed, options, no_compression, false)
-end
-
-function unsafe_encode_net!(output, value::Integer, i::Integer=0)
+function encode_net!(output, value::Integer, i::Integer=0)
     b = sizeof(value)
+    length(output) < b && return 0
     while b > 0
         unsafe_store!(pointer(output), (value & 0xff) % UInt8, i+b-1)
         value >>= 8
@@ -80,63 +12,47 @@ function unsafe_encode_net!(output, value::Integer, i::Integer=0)
     return sizeof(value)
 end
 
-function Base.sizeof(h::LZOPBlockHeader)
-    bytes = 4
-    h.eos && return bytes
-
-    bytes += 4
-    if (h.options & ADLER32_D) != 0
-        bytes += 4
-    end
-    if (h.options & CRC32_D) != 0
-        bytes += 4
-    end
-
-    if !h.no_compression
-        if (h.options & ADLER32_C) != 0
-            bytes += 4
-        end
+function compress_block!(algo::AbstractLZOAlgorithm, output, input::AbstractVector{UInt8}; crc32::Bool=false, filter::FilterType=NO_FILTER)
+    length(input) > MAX_BLOCK_SIZE && throw(ArgumentError("unable to encode input block of size $(length(input)) > $MAX_BLOCK_SIZE"))
     
-        if (h.options & CRC32_C) != 0
-            bytes += 4
-        end
-    end
-
-    return bytes
-end
-
-function unsafe_encode!(output, h::LZOPBlockHeader)
-    w = 0
+    bytes_written = 0
 
     # uncompressed length
-    w += unsafe_encode_net!(output, h.uncompressed_length, w+1)
+    w = encode_net!(output, length(input) % UInt32, bytes_written+1)
+    w == 0 && return 0
+    bytes_written += w
 
     # final block has length of 0 and signals end of stream
-    h.eos && return w
+    length(input) == 0 && return bytes_written
 
-    w += unsafe_encode_net!(output, h.compressed_length, w+1)
+    # uncompressed checksum
+    checksum = crc32 ? Libz.crc32(input) : Libz.adler32(input)
+    
+    # compressed length
+    filter!(input, filter)
+    compressed = compress(algo, input)
+    # LZOP always optimizes, which doubles the compression time for little gain (TODO: revisit this decision)
+    unsafe_optimize!(algo, input, compressed)
 
-    # uncompressed checksum(s) (optional)
-    if (h.options & ADLER32_D) != 0
-        # Note: the initial value for Adler32 is 1, not 0 as defined in Libz.jl
-        w += unsafe_encode_net!(output, h.adler32_uncompressed, w+1)
+    compressed_length = min(length(input), length(compressed))
+    # will it fit?
+    if length(output) - bytes_written < compressed_length + 16
+        return 0
     end
-    if (h.options & CRC32_D) != 0
-        w += unsafe_encode_net!(output, h.crc32_uncompressed, w+1)
+    # everything else is guaranteed to fit
+
+    use_compressed = compressed_length == length(compressed)
+    bytes_written += encode_net!(output, compressed_length % UInt32, bytes_written+1)
+    bytes_written += encode_net!(output, checksum, bytes_written+1)
+
+    # compressed checksum is only output if compression is used
+    if use_compressed
+        checksum = crc32 ? Libz.crc32(compressed) : Libz.adler32(compressed)
+        bytes_written += encode_net!(output, checksum, bytes_written+1)
+        bytes_written += unsafe_copyto!(output, bytes_written+1, compressed, 1, compressed_length)
+    else
+        bytes_written += unsafe_copyto!(output, bytes_written+1, input, 1, compressed_length)
     end
 
-    if !h.no_compression
-        # compressed checksum(s) (optional, and only if compression helped)
-        if (h.options & ADLER32_C) != 0
-            # Note: the initial value for Adler32 is 1, not 0 as defined in Libz.jl
-            w += unsafe_encode_net!(output, h.adler32_compressed, w+1)
-        end
-        if (h.options & CRC32_C) != 0
-            w += unsafe_encode_net!(output, h.crc32_compressed, w+1)
-        end
-    end
-
-    # compressed or uncompressed data follows, depending on if compressed_length < uncompressed_length comparison
-
-    return w
+    return bytes_written
 end
