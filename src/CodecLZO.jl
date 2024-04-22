@@ -25,16 +25,25 @@ import CircularArrays:
 
 import LibLZO:
     max_compressed_length,
+    unsafe_decompress!,
     unsafe_compress!,
     decompress,
-    LZO1X_1
+    compress,
+    unsafe_optimize!,
+    LZO1X_1,
+    AbstractLZOAlgorithm
 
-import Libz:
-    adler32, crc32
+import SimpleChecksums:
+    adler32
+
+import CRC:
+    CRC_32, crc
 
 @static if VERSION < v"1.7"
     include("compat.jl")
 end
+
+const _crc32 = crc(CRC_32)
 
 include("errors.jl")
 include("memory_management.jl")

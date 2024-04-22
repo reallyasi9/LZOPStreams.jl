@@ -16,7 +16,7 @@
     MOD14_FILTER
     MOD15_FILTER
     MOD16_FILTER
-    MTF_FILTER = typemax(Int)
+    MTF_FILTER = typemax(Int32)
 end
 
 """
@@ -30,7 +30,7 @@ Performs the mapping `data[i] <- (data[i] + data[i-n]) % 256` for all indices `i
 - `data`: An array-like object that implements `getindex`, `setindex`, and `length`, and stores `UInt8` values.
 - `n::Integer`: The number of sums to cycle.
 """
-function mod_filter!(data, n::Integer)
+function mod_filter!(data::AbstractArray{UInt8}, n::Integer)
     n == 1 && return mod1_filter!(data)
     cache = zeros(UInt8, n)
     for i in eachindex(data)
@@ -41,7 +41,7 @@ function mod_filter!(data, n::Integer)
     return data
 end
 
-function mod1_filter!(data)
+function mod1_filter!(data::AbstractArray{UInt8})
     cache = UInt8(0)
     for i in eachindex(data)
         cache += data[i]
@@ -61,7 +61,7 @@ Performs the mapping `data[i] <- (data[i] - data[i-n]) % 256` for all indices `i
 - `data`: An array-like object that implements `getindex`, `setindex`, and `length`, and stores `UInt8` values.
 - `n::Integer`: The number of sums to cycle.
 """
-function unmod_filter!(data, n::Integer)
+function unmod_filter!(data::AbstractArray{UInt8}, n::Integer)
     n == 1 && return unmod1_filter!(data)
     cache = zeros(UInt8, n)
     for i in eachindex(data)
@@ -72,7 +72,7 @@ function unmod_filter!(data, n::Integer)
     return data
 end
 
-function unmod1_filter!(data)
+function unmod1_filter!(data::AbstractArray{UInt8})
     cache = UInt8(0)
     for i in eachindex(data)
         data[i] -= cache
@@ -89,7 +89,7 @@ end
 ## Arguments
 - `data`: An array-like object that implements `getindex`, `setindex`, and `eachindex`, and stores `UInt8` values.
 """
-function mtf_filter!(data)
+function mtf_filter!(data::AbstractArray{UInt8})
     dict = UInt8.(0:255)
 
     for i in eachindex(data)
@@ -114,7 +114,7 @@ end
 ## Arguments
 - `data`: An array-like object that implements `getindex`, `setindex`, and `eachindex`, and stores `UInt8` values.
 """
-function unmtf_filter!(data)
+function unmtf_filter!(data::AbstractArray{UInt8})
     dict = UInt8.(0:255)
 
     for i in eachindex(data)
@@ -131,7 +131,7 @@ function unmtf_filter!(data)
     return data
 end
 
-function filter!(data, filter::FilterType)
+function lzop_filter!(data::AbstractArray{UInt8}, filter::FilterType)
     length(data) == 0 && return data
     filter == NO_FILTER && return data
     filter == MOD1_FILTER && return mod1_filter!(data)
@@ -140,7 +140,7 @@ function filter!(data, filter::FilterType)
     throw(ArgumentError("unknown filter type $filter"))
 end
 
-function unfilter!(data, filter::FilterType)
+function lzop_unfilter!(data::AbstractArray{UInt8}, filter::FilterType)
     length(data) == 0 && return data
     filter == NO_FILTER && return data
     filter == MOD1_FILTER && return unmod1_filter!(data)
