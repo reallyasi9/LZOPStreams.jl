@@ -102,7 +102,7 @@ end
 """
     find_next_match!(dict::HashMap, v, first_index::Integer, last_index::Integer, [skip_trigger::Integer=typemax(Int), skip_start_index::Integer=i])::Tuple{Int,Int}
 
-Searches `v` frin `first_index` to `last_index` for the first `keytype(dict)` element that matches in its own history as recorded in `dict`, returning the first matching index `i` and the historical index `j` such that `v[i] == v[j]`, `j<i`, and `v[i-skip]` does not match anything (see description of `skip` below).
+Searches `v` from `first_index` to `last_index` for the first `keytype(dict)` element that matches in its own history as recorded in `dict`, returning the first matching index `i` and the historical index `j` such that `v[i] == v[j]`, `j<i`, and `v[i-skip]` does not match anything (see description of `skip` below).
 
 The argument `v` need only implement `getindex(v, ::Integer)`. If the search runs out of bounds, a `BoundsError` will be thrown. If no matches are found, `(0,0)` will be returned.
 
@@ -111,18 +111,15 @@ The method updates `dict` in place with new information about locations of eleme
 Indices `i` of `v` are examined one at a time until `skip_start_index - i + 1` is equal to a multiple of `pow(2, skip_trigger)`, after which every other index is examined (then every third, fourth, etc.).
 """
 
-function find_next_match!(dict::HashMap{K,Int}, v, first_index::Integer, last_index::Integer, skip_trigger::Integer=typemax(Int), skip_start_index::Integer=first_index) where {K}
-    i = Int(first_index)
-    while i <= last_index
+function find_next_match!(dict::HashMap{K,I}, v) where {K,I}
+    for i in eachindex(v)
         value = reinterpret_get(K, v, i)
         history = replace!(dict, value, i)
-        if history > 0 && i - history <= LZO1X1_MAX_DISTANCE && reinterpret_get(K, v, history) == value
-            return i, history
-        else
-            i += ((i - skip_start_index + 1) >> skip_trigger) + 1
+        if history > 0 && history < i && i - history <= LZO1X1_MAX_DISTANCE && reinterpret_get(K, v, history) == value
+            return I(i), history
         end
     end
-    return zero(Int), zero(Int)
+    return zero(I), zero(I)
 end
 
 function build_command(codec::LZO1X1CompressorCodec)

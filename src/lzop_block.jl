@@ -13,8 +13,9 @@ const LZOP_MAX_BLOCK_SIZE = 64*1024*1024
 # Keyword arguments
 - 'crc32::Bool = false`: If `true`, write a CRC-32 checksum for both uncompressed and compressed data. If `false`, write Adler32 checksums instead.
 - `filter::FilterType = NO_FILTER`: Transform the input data using the specified LZOP filter. These filters are documented in the `FilterType` enum. The effect on the compression efficiency is minimal in most cases, so use of them is discouraged.
+- `optimize::Bool = false`: If `true`, process the data twice to optimize how it is stored for faster decompression. Setting this to `true` doubles compression time with little to no improvement in decompression time, so its use is not recommended.
 """
-function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::AbstractLZOAlgorithm; crc32::Bool=false, filter::FilterType=NO_FILTER)
+function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::AbstractLZOAlgorithm; crc32::Bool=false, filter::FilterType=NO_FILTER, optimize::Bool=false)
     bytes_read = min(length(invec), LZOP_MAX_BLOCK_SIZE) % Int
     
     bytes_written = zero(Int)
@@ -34,13 +35,19 @@ function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::Abstract
     # compressed length
     lzop_filter!(input, filter)
     compressed = compress(algo, input)
-    # LZOP always optimizes, which doubles the compression time for little gain (TODO: revisit this decision)
-    # We choose to skip this step
     compressed_length = min(bytes_read, length(compressed)) % UInt32
 
-    use_compressed = compressed_length == length(compressed)
     bytes_written += write(output, hton(compressed_length))
     bytes_written += write(output, hton(checksum))
+
+    # optimize only if using compressed data
+    use_compressed = length(compressed) < bytes_read
+    if optimize && use_compressed
+        original_length = unsafe_optimize!(algo, input, compressed)
+        if original_length != bytes_read
+            throw(ErrorException("LZO optimization failed"))
+        end
+    end
 
     # compressed checksum is only output if compression is used
     if use_compressed

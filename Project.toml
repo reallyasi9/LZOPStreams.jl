@@ -1,4 +1,4 @@
-name = "CodecLZO"
+name = "CodecLZOP"
 uuid = "cda889bb-a424-44da-af60-21a472ea483c"
 authors = ["Phil Killewald <reallyasi9@users.noreply.github.com> and contributors"]
 version = "1.0.0"
