@@ -5,7 +5,7 @@ abstract type AbstractLZOPFilter end
 
     Do nothing as an LZOP filter.
 """
-struct NoopFilter::AbstractLZOPFilter end
+struct NoopFilter <: AbstractLZOPFilter end
 lzop_filter!(::NoopFilter, data::AbstractVector{UInt8}) = data
 lzop_unfilter!(::NoopFilter, data::AbstractVector{UInt8}) = data
 
@@ -19,7 +19,7 @@ Performs the mapping `data[i] <- (data[i] + data[i-N]) % 256` for all indices `i
 ## Template parameters
 - `N::Integer`: The number of sums to cycle.
 """
-struct ModuloSumFilter{N}::AbstractLZOPFilter
+struct ModuloSumFilter{N} <: AbstractLZOPFilter
     cache::Vector{UInt8}
 
     function ModuloSumFilter{N}() where {N}
@@ -32,7 +32,7 @@ end
 
     Apply a reversable move-to-front mapping.
 """
-struct MoveToFrontFilter::AbstractLZOPFilter
+struct MoveToFrontFilter <: AbstractLZOPFilter
     dict::Vector{UInt8}
 
     function MoveToFrontFilter()
@@ -108,7 +108,7 @@ function lzop_unfilter!(f::ModuloSumFilter{N}, data::AbstractArray{UInt8}) where
 end
 
 # special, faster version for N=1 case
-function lzop_unfilter!(::ModuloSumFilter{1}, data::AbstractArray{UInt8}) where {N}
+function lzop_unfilter!(::ModuloSumFilter{1}, data::AbstractArray{UInt8})
     cache = zero(UInt8)
     for j in eachindex(data)
         data[j] -= cache

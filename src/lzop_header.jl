@@ -1,18 +1,18 @@
-@flagset LZOPFlags{Symbol, UInt32} begin
-    1 --> :ADLER32_D
-    2 --> :ADLER32_C
-    3 --> :STDIN
-    4 --> :STDOUT
-    5 --> :NAME_DEFAULT
-    6 --> :DOSISH
-    7 --> :H_EXTRA_FIELD
-    8 --> :H_GMTDIFF
-    9 --> :CRC32_D
-    10 --> :CRC32_C
-    11 --> :MULTIPART
-    12 --> :H_FILTER
-    13 --> :H_CRC32
-    14 --> :H_PATH
+@flagset LZOPFlags {Symbol, UInt32} begin
+    0x1 --> :ADLER32_D
+    0x2 --> :ADLER32_C
+    0x4 --> :STDIN
+    0x8 --> :STDOUT
+    0x10 --> :NAME_DEFAULT
+    0x20 --> :DOSISH
+    0x40 --> :H_EXTRA_FIELD
+    0x80 --> :H_GMTDIFF
+    0x100 --> :CRC32_D
+    0x200 --> :CRC32_C
+    0x400 --> :MULTIPART
+    0x800 --> :H_FILTER
+    0x1000 --> :H_CRC32
+    0x2000 --> :H_PATH
 end
 
 @enum LZOPOS begin
@@ -52,48 +52,68 @@ end
     M_LZO1X_999 = 0x03
 end
 
-@kwarg struct LZOPArchiveHeader{M <: AbstractLZOAlgorithm, F <: AbstractLZOPFilter}
-    version::VersionNumber = VersionNumber(0, 0, 0)
-    lib_version::VersionNumber = VersionNumber(0, 0, 0)
-    version_needed_to_extract::VersionNumber = VersionNumber(0, 9, 0)
-    method::M = LZO1X_1
-    flags::LZOPFlags = 0x00000000
-    filter::F = NoopFilter()
-    mode::UInt32 = 0o000
-    mtime::DateTime = Dates.unix2datetime(0)
-    header_checksum::UInt32 = 0x00000000
-    extra_field_checksum::UInt32 = 0x00000000
+@kwdef struct LZOPArchiveHeader{M <: AbstractLZOAlgorithm, F <: AbstractLZOPFilter}
+    version::VersionNumber = LZOP_VERSION_NUMBER
+    lib_version::VersionNumber = LZO_LIB_VERSION_NUMBER
+    version_needed_to_extract::VersionNumber = LZOP_MIN_VERSION_NUMBER
+    method::M = M()
+    flags::LZOPFlags = typemin(LZOPFlags)
+    filter::F = F()
+    mode::UInt32 = 0o0000
+    mtime::DateTime = unix2datetime(0)
 
-    method_name::String16 = "unknown"
     name::String255 = "" # unnamed means using STDIN/STDOUT
-    extra_field::Vector{UInt8} = Vector{UInt8}() # not used
+    extra_field::Vector{UInt8} = Vector{UInt8}(undef, 0) # not used
 end
 
-mutable struct ChecksumReader{T <: IO} <: IO
+
+mutable struct ChecksumWrapper{T <: IO} <: IO
     io::T
     crc::UInt32
     adler::UInt32
 
-    ChecksumReader(io::T) where (T <: IO) = new{T}(io, 0x00000000, 0x00000001)
+    function ChecksumWrapper(io::T) where (T <: IO)
+        return new{T}(io, 0x00000000, 0x00000001)
+    end
 end
 
-function read_le(cr::ChecksumReader, ::Type{T}) where (T)
+function read_be(cr::ChecksumWrapper, ::Type{T}) where (T <: Integer)
     value = read(cr.io, T)
-    cr.crc = _crc32(value, cr.crc)
+    cr.crc = crc32(collect(reinterpret(UInt8, [value])), cr.crc)
     cr.adler = adler32(value, cr.adler)
-    return ltoh(value)
+    return ntoh(value)
 end
 
-function read_bytes(cr::ChecksumReader, n::Integer)
+function read_bytes(cr::ChecksumWrapper, n::Integer)
     value = Vector{UInt8}(undef, n)
     nr = readbytes!(cr.io, value, n)
     if nr != n
         throw(ErrorException("unable to read bytes from IO: exepected to read $n, read $nr"))
     end
-    cr.crc = _crc32(value, cr.crc)
-    cr.adler = adler32(value, cr.adler)
+    cr.crc = crc32(value, cr.crc)
+    cr.adler = adler32(ntoh(value), cr.adler)
     return value
 end
+
+function write_be(cr::ChecksumWrapper, value::T) where (T <: Integer)
+    val = hton(value)
+    cr.crc = crc32(collect(reinterpret(UInt8, [val])), cr.crc)
+    cr.adler = adler32(val, cr.adler)
+    return write(cr.io, val)
+end
+
+function write_bytes(cr::ChecksumWrapper, bytes::AbstractVector{UInt8})
+    cr.crc = crc32(bytes, cr.crc)
+    cr.adler = adler32(bytes, cr.adler)
+    return write(cr.io, bytes)
+end
+
+function reset_checksum!(cr::ChecksumWrapper)
+    cr.crc = 0x00000000
+    cr.adler = 0x00000001
+    return cr
+end
+
 
 """
     clean_filename(name) -> String
@@ -115,7 +135,7 @@ function clean_name(name::AbstractString)
     return join(splits, "/")
 end
 
-function compute_lzo_method(method::UInt8, level::UInt8)::AbstractLZOAlgorithm
+function translate_method(method::UInt8, level::UInt8)::AbstractLZOAlgorithm
     if method ∉ (M_LZO1X_1, M_LZO1X_1_15, M_LZO1X_999)
         throw(ErrorException("unrecognized LZO method: $method"))
     end
@@ -140,33 +160,73 @@ function compute_lzo_method(method::UInt8, level::UInt8)::AbstractLZOAlgorithm
     method == M_LZO1X_999 && return LZO1X_999(level)
 end
 
+# Note: return method, level to be read as separate 8-bit integers (ignore byte order)
+function translate_method(::LZO1X_1)
+    return UInt16(M_LZO1X_1) << 8 | 0x0003
+end
+
+function translate_method(::LZO1X_1_15)
+    return UInt16(M_LZO1X_1_15) << 8 | 0x0001
+end
+
+function translate_method(m::LZO1X_999)
+    level = UInt16(m.compression_level)
+    return UInt16(M_LZO1X_999) << 8 | level
+end
+
+
 """
-    compute_version(ver::UInt16) -> VersionNumber
+    translate_version(ver::UInt16) -> VersionNumber
 
     Convert LZO/LZOP's version format to a semver VersionNumber.
 """
-function compute_version(ver::UInt16)
+function translate_version(ver::UInt16)
     major = (ver & (0xf000)) >> 12
     minor = (ver & (0x0ff0)) >> 8
     patch = (ver & (0x000f))
     return VersionNumber(major, minor, patch)
 end
 
-function compute_lzo_filter(f::UInt32)
-    
+function translate_version(ver::VersionNumber)
+    return UInt16(((ver.major & 0xf) << 12) | ((ver.minor & 0xff) << 8) | (ver.patch & 0xf))
+end
+
+function translate_filter(f::UInt32)::AbstractLZOPFilter
+    # Note: there is no way to specify use of the move-to-front filter, even though the filter is defined in the official LZOP code.
+    if f == 0 || f > 16
+        return NoopFilter()
+    else
+        return ModuloSumFilter{f}()
+    end
+end
+
+function translate_filter(::ModuloSumFilter{N}) where (N)
+    return UInt32(N)
+end
+
+function translate_mtime(low::UInt32, high::UInt32)
+    return Dates.unix2datetime((UInt64(high) << 32) | UInt64(low))
+end
+
+# Two BE 32-bit ints written as a single BE 64-bit int, so low comes first
+function translate_mtime(mtime::DateTime)
+    seconds = round(UInt64, Dates.datetime2unix(mtime))
+    low = UInt64(seconds & 0xffffffff)
+    high = UInt64(seconds >> 32)
+    return (low << 32) | high
 end
 
 function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     # until flags are read, we don't know whether CRC32 or Adler32 should be used.
-    checksum_io = ChecksumReader(io)
+    checksum_io = ChecksumWrapper(io)
     
-    version = read_le(checksum_io, UInt16)
+    version = read_be(checksum_io, UInt16)
     if version < 0x0900
         throw(ErrorException("archive was created with a prerelease version of lzop: $version < 0x0900"))
     end
     version_needed_to_extract = 0x0000
     if version > 0x0940
-        version_needed_to_extract = read_le(checksum_io, UInt16)
+        version_needed_to_extract = read_be(checksum_io, UInt16)
         if version_needed_to_extract > LibLZO.version()
             throw(ErrorException("version needed to extract archive is greater than installed version of LibLZO: $version_needed_to_extract > $(LibLZO.version())"))
         end
@@ -175,31 +235,31 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
         end
     end
 
-    lib_version = read_le(checksum_io, UInt16)
+    lib_version = read_be(checksum_io, UInt16)
 
-    method = read_le(checksum_io, UInt8)
+    method = read_be(checksum_io, UInt8)
     if version >= 0x0940
-        level = read_le(checksum_io, UInt8)
+        level = read_be(checksum_io, UInt8)
     else
         level = 0x00
     end
 
-    flags = read_le(checksum_io, LZOPFlags)
+    flags = read_be(checksum_io, LZOPFlags)
 
     if flags & :H_FILTER
-        filter = read_le(checksum_io, UInt32)
+        filter = read_be(checksum_io, UInt32)
     else
         filter = 0x00000000
     end
 
-    mode = read_le(checksum_io, UInt32)
+    mode = read_be(checksum_io, UInt32)
     if flags & :STDIN
         mode = 0x00000000
     end
 
-    mtime_low = read_le(checksum_io, UInt32)
+    mtime_low = read_be(checksum_io, UInt32)
     if version >= 0x0940
-        mtime_high = read_le(checksum_io, UInt32)
+        mtime_high = read_be(checksum_io, UInt32)
     else
         mtime_high = 0x00000000
     end
@@ -210,7 +270,7 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
         end
     end
 
-    name_length = read_le(checksum_io, UInt8)
+    name_length = read_be(checksum_io, UInt8)
     if name_length > 0
         name = String(read_bytes(checksum_io, name_length))
         # Weirdly, this isn't an error
@@ -225,7 +285,7 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
 
     # checksum has been computed
     checksum = (flags & :H_CRC32) ? checksum_io.crc : checksum_io.adler
-    header_checksum = read_le(checksum_io, UInt32)
+    header_checksum = read_be(checksum_io, UInt32)
     if checksum != header_checksum
         throw(ErrorException("header checksum does not match: expected $header_checksum (H_CRC32=$(flags & :H_CRC32)), read $checksum"))
     end
@@ -233,17 +293,16 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     # extra data is not used, but we check it anyway
     if flags & :H_EXTRA_FIELD
         # reset the checksum calculation
-        checksum_io.crc = 0x00000000
-        checksum_io.adler = 0x00000001
+        reset_checksum!(checksum_io)
 
-        extra_length = read_le(checksum_io, UInt32)
+        extra_length = read_be(checksum_io, UInt32)
         if extra_length > 0
             extra = read_bytes(checksum_io, extra_length)
         else
             extra = Vecotr{UInt8}(undef, 0)
         end
 
-        extra_field_checksum = read_le(checksum_io, UInt32)
+        extra_field_checksum = read_be(checksum_io, UInt32)
         extra_checksum = (flags & :H_CRC32) ? checksum_io.crc : checksum_io.adler
         if extra_checksum != extra_field_checksum
             throw(ErrorException("extra field checksum does not match: expected $extra_field_checksum (H_CRC32=$(flags & :H_CRC32)), read $extra_checksum"))
@@ -253,13 +312,67 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
         extra_field_checksum = 0x00000000
     end
 
-    # post-compute the necessary information for extraction
-    v_version = compute_version(version)
-    v_lib_version = compute_version(lib_version)
-    v_version_needed_to_extract = compute_version(version_needed_to_extract)
+    # post-compute the objects in the header
+    v_version = translate_version(version)
+    v_lib_version = translate_version(lib_version)
+    v_version_needed_to_extract = translate_version(version_needed_to_extract)
 
-    lzo_method = compute_lzo_method(method, level)
+    lzo_method = translate_method(method, level)
 
-    lzo_filter = compute_lzo_filter(filter)
+    lzo_filter = translate_filter(filter)
 
+    mtime = translate_mtime(mtime_low, mtime_high)
+
+    return LZOPArchiveHeader{lzo_method, lzo_filter}(
+        v_version,
+        v_lib_version,
+        v_version_needed_to_extract,
+        lzo_method,
+        flags,
+        lzo_filter,
+        mode,
+        mtime,
+        name,
+        extra_field,
+    )
+end
+
+function Base.write(io::IO, header::LZOPArchiveHeader)
+    checksum_io = ChecksumWrapper(io)
+
+    nb = 0
+
+    nb += write_be(checksum_io, translate_version(header.version))
+    nb += write_be(checksum_io, translate_version(header.lib_version))
+    nb += write_be(checksum_io, translate_version(header.version_needed_to_extract))
+    nb += write_be(checksum_io, translate_method(header.method)) # note: includes level
+    nb += write_be(checksum_io, UInt32(header.flags))
+    if :H_FILTER in header.flags
+        nb += write_be(checksum_io, translate_filter(header.filter))
+    end
+    nb += write_be(checksum_io, header.mode)
+    nb += write_be(checksum_io, translate_mtime(header.mtime)) # note: writes both low and high bytes
+    nb += write_be(checksum_io, UInt8(length(header.name)))
+    if length(header.name) > 0
+        nb += write_bytes(checksum_io, codeunits(header.name))
+    end
+    if :H_CRC32 in header.flags
+        nb += write_be(checksum_io, checksum_io.crc)
+    else
+        nb += write_be(checksum_io, checksum_io.adler)
+    end
+
+    if :H_EXTRA_FIELD in header.flags
+        reset!(checksum_io)
+
+        nb += write_be(checksum_io, UInt32(length(header.extra_field)))
+        nb += write_bytes(checksum_io, extra.header_field)
+        if :H_CRC32 in header.flags
+            nb += write_be(checksum_io, checksum_io.crc)
+        else
+            nb += write_be(checksum_io, checksum_io.adler)
+        end
+    end
+
+    return nb
 end

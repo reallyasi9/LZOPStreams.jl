@@ -4,21 +4,19 @@ authors = ["Phil Killewald <reallyasi9@users.noreply.github.com> and contributor
 version = "1.0.0"
 
 [deps]
-CRC = "44b605c4-b955-5f2b-9b6d-d2bd01d3d205"
-CircularArrays = "7a955b69-7140-5f4e-a0ed-f168c5e2e749"
+CRC32 = "b4567568-9dcc-467e-9b62-c342d3a501d3"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 FlagSets = "c7ad171a-416d-44a6-be7b-07ee749f090e"
 InlineStrings = "842dd82b-1e85-43dc-bf29-5d0ee9dffc48"
 LibLZO = "32aa4ff1-cc5a-4ead-abec-09bb076ef871"
 SimpleChecksums = "99b673fe-21e3-4c03-9f5c-4e20ec304e65"
-TranscodingStreams = "3bb67fe8-82b1-5028-8e26-92a6c54297fa"
 
 [compat]
-CircularArrays = "1.3"
+CRC32 = "1.0"
 FlagSets = "0.3"
 InlineStrings = "1.4"
 LibLZO = "1.0"
-TranscodingStreams = "0.10"
+SimpleChecksums = "1.0"
 julia = "1.6"
 
 [extras]

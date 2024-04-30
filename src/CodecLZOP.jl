@@ -1,21 +1,5 @@
 module CodecLZOP
 
-export
-    LZOPCompressorCodec,
-    LZOPCompressor,
-    LZOPCompressorStream,
-    LZOPDecompressorCodec,
-    LZOPDecompressor,
-    LZOPDecompressorStream
-
-using TranscodingStreams:
-    TranscodingStream,
-    Memory,
-    Error
-
-import CircularArrays:
-    CircularVector
-
 using LibLZO:
     max_compressed_length,
     unsafe_decompress!,
@@ -24,28 +8,36 @@ using LibLZO:
     compress,
     unsafe_optimize!,
     LZO1X_1,
-    AbstractLZOAlgorithm
+    LZO1X_1_15,
+    LZO1X_999,
+    AbstractLZOAlgorithm,
+    version
 
 using SimpleChecksums:
     adler32
 
-using CRC:
-    CRC_32, crc
+using CRC32:
+    crc32
 
 using Dates
 
 using InlineStrings:
     String255
 
+using FlagSets
+
 @static if VERSION < v"1.7"
     include("compat.jl")
 end
 
-const _crc32 = crc(CRC_32)
+const LZO_LIB_VERSION = version()
+const LZO_LIB_VERSION_NUMBER = VersionNumber(LZO_LIB_VERSION >> 12, (LZO_LIB_VERSION >> 4) & 0xff, (LZO_LIB_VERSION & 0xf))
+const LZOP_VERSION_NUMBER = VersionNumber(1, 3, 0)
+const LZOP_MIN_VERSION_NUMBER = VersionNumber(0, 95, 0)
 
-include("errors.jl")
-include("memory_management.jl")
 include("lzop_filter.jl")
+include("lzop_header.jl")
 include("lzop_block.jl")
+include("lzop_file.jl")
 
 end
