@@ -1,6 +1,15 @@
 abstract type AbstractLZOPFilter end
 
 """
+    NoopFilter
+
+    Do nothing as an LZOP filter.
+"""
+struct NoopFilter::AbstractLZOPFilter end
+lzop_filter!(::NoopFilter, data::AbstractVector{UInt8}) = data
+lzop_unfilter!(::NoopFilter, data::AbstractVector{UInt8}) = data
+
+"""
     ModuloSumFilter{N}
 
     Apply a reversable modulo sum mapping.

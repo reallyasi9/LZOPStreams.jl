@@ -12,10 +12,10 @@ const LZOP_MAX_BLOCK_SIZE = 64*1024*1024
 
 # Keyword arguments
 - 'crc32::Bool = false`: If `true`, write a CRC-32 checksum for both uncompressed and compressed data. If `false`, write Adler32 checksums instead.
-- `filter::FilterType = NO_FILTER`: Transform the input data using the specified LZOP filter. These filters are documented in the `FilterType` enum. The effect on the compression efficiency is minimal in most cases, so use of them is discouraged.
+- `filter::AbstractLZOPFilter = NO_FILTER`: Transform the input data using the specified LZOP filter. These filters are documented in the `FilterType` enum. The effect on the compression efficiency is minimal in most cases, so use of them is discouraged.
 - `optimize::Bool = false`: If `true`, process the data twice to optimize how it is stored for faster decompression. Setting this to `true` doubles compression time with little to no improvement in decompression time, so its use is not recommended.
 """
-function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::AbstractLZOAlgorithm; crc32::Bool=false, filter::FilterType=NO_FILTER, optimize::Bool=false)
+function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::AbstractLZOAlgorithm; crc32::Bool=false, filter::AbstractLZOPFilter=NoopFilter(), optimize::Bool=false)
     bytes_read = min(length(invec), LZOP_MAX_BLOCK_SIZE) % Int
     
     bytes_written = zero(Int)
@@ -33,7 +33,7 @@ function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::Abstract
     checksum = crc32 ? _crc32(input) : adler32(input)
     
     # compressed length
-    lzop_filter!(input, filter)
+    lzop_filter!(filter, input)
     compressed = compress(algo, input)
     compressed_length = min(bytes_read, length(compressed)) % UInt32
 
@@ -89,10 +89,10 @@ compress_block(input::AbstractString, output::IO, algo::AbstractLZOAlgorithm; kw
 
 # Keyword arguments
 - 'crc32::Bool = false`: If `true`, assume the checksum written to the block for both uncompressed and compressed data is a CRC-32 checksum. If `false`, assume Adler32 checksums instead.
-- `filter::FilterType = NO_FILTER`: Untransform the output data using the specified LZOP filter. These filters are documented in the `FilterType` enum. The effect on the compression efficiency is minimal in most cases, so use of them is discouraged.
+- `filter::AbstractLZOPFilter = NO_FILTER`: Untransform the output data using the specified LZOP filter. These filters are documented in the `FilterType` enum. The effect on the compression efficiency is minimal in most cases, so use of them is discouraged.
 - `on_checksum_fail::Symbol = :error`: Choose how the function responds to invalud checksums. If `:error`, and `ErrorException` will be thrown. If `:warn`, a warning will be printed. If `:ignore`, the checksum values will be completely ignored.
 """
-function decompress_block(input::IO, output::IO, algo::AbstractLZOAlgorithm; crc32::Bool=false, filter::FilterType=NO_FILTER, on_checksum_fail::Symbol=:error)
+function decompress_block(input::IO, output::IO, algo::AbstractLZOAlgorithm; crc32::Bool=false, filter::AbstractLZOPFilter=NoopFilter(), on_checksum_fail::Symbol=:error)
     on_checksum_fail ∉ (:error, :warn, :ignore) && throw(ArgumentError("on_checksum_fail must be one of :error, :warn, or :ignore (got $on_checksum_fail)"))
 
     # uncompressed length
@@ -146,7 +146,7 @@ function decompress_block(input::IO, output::IO, algo::AbstractLZOAlgorithm; crc
     end
 
     # in-place unfilter of data before the checksum
-    lzop_unfilter!(uncompressed_data, filter)
+    lzop_unfilter!(filter, uncompressed_data)
 
     # only perform final checksum if flag not set to ignore and the data is compressed
     if on_checksum_fail != :ignore
