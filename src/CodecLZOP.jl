@@ -31,9 +31,9 @@ using FlagSets
 end
 
 const LZO_LIB_VERSION = version()
-const LZO_LIB_VERSION_NUMBER = VersionNumber(LZO_LIB_VERSION >> 12, (LZO_LIB_VERSION >> 4) & 0xff, (LZO_LIB_VERSION & 0xf))
-const LZOP_VERSION_NUMBER = VersionNumber(1, 3, 0)
-const LZOP_MIN_VERSION_NUMBER = VersionNumber(0, 95, 0)
+const LZO_LIB_VERSION_NUMBER = VersionNumber(LZO_LIB_VERSION >> 12, (LZO_LIB_VERSION >> 8) & 0xf, (LZO_LIB_VERSION >> 4) & 0xf, (LZO_LIB_VERSION & 0xf,))
+const LZOP_VERSION_NUMBER = VersionNumber(1, 3, 0, (0,))
+const LZOP_MIN_VERSION_NUMBER = VersionNumber(0, 9, 0, (0,))
 
 include("lzop_filter.jl")
 include("lzop_header.jl")

@@ -182,13 +182,14 @@ end
 """
 function translate_version(ver::UInt16)
     major = (ver & (0xf000)) >> 12
-    minor = (ver & (0x0ff0)) >> 8
-    patch = (ver & (0x000f))
-    return VersionNumber(major, minor, patch)
+    minor = (ver & (0x0f00)) >> 8
+    patch = (ver & (0x00f0)) >> 4
+    prerelease = (ver & (0x000f))
+    return VersionNumber(major, minor, patch, (prerelease,))
 end
 
 function translate_version(ver::VersionNumber)
-    return UInt16(((ver.major & 0xf) << 12) | ((ver.minor & 0xff) << 8) | (ver.patch & 0xf))
+    return UInt16(((ver.major & 0xf) << 12) | ((ver.minor & 0xf) << 8) | (ver.patch & 0xf << 4) | (isempty(ver.prerelease) ? 0x0 : first(ver.prerelease) & 0xf))
 end
 
 function translate_filter(f::UInt32)::AbstractLZOPFilter
@@ -220,55 +221,55 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     # until flags are read, we don't know whether CRC32 or Adler32 should be used.
     checksum_io = ChecksumWrapper(io)
     
-    version = read_be(checksum_io, UInt16)
-    if version < 0x0900
-        throw(ErrorException("archive was created with a prerelease version of lzop: $version < 0x0900"))
+    version = translate_version(read_be(checksum_io, UInt16))
+    if version < LZOP_MIN_VERSION_NUMBER
+        throw(ErrorException("archive was created with an unreleased version of lzop: $version < $LZOP_MIN_VERSION_NUMBER"))
     end
-    version_needed_to_extract = 0x0000
-    if version > 0x0940
-        version_needed_to_extract = read_be(checksum_io, UInt16)
-        if version_needed_to_extract > LibLZO.version()
-            throw(ErrorException("version needed to extract archive is greater than installed version of LibLZO: $version_needed_to_extract > $(LibLZO.version())"))
+    lib_version = translate_version(read_be(checksum_io, UInt16))
+    version_needed_to_extract = v"0"
+    if version >= v"0.9.4"
+        version_needed_to_extract = translate_version(read_be(checksum_io, UInt16))
+        if version_needed_to_extract > LZOP_VERSION_NUMBER
+            throw(ErrorException("version needed to extract archive is greater than this version understands: $version_needed_to_extract > $LZOP_VERSION_NUMBER"))
         end
-        if version_needed_to_extract < 0x0900
-            throw(ErrorException("version needed to extract archive is a prerelease version of lzop: $version_needed_to_extract < 0x0900"))
+        if version_needed_to_extract < LZOP_MIN_VERSION_NUMBER
+            throw(ErrorException("version needed to extract archive is an unreleased version of lzop: $version_needed_to_extract < $LZOP_MIN_VERSION_NUMBER"))
         end
     end
-
-    lib_version = read_be(checksum_io, UInt16)
 
     method = read_be(checksum_io, UInt8)
-    if version >= 0x0940
+    if version >= v"0.9.4"
         level = read_be(checksum_io, UInt8)
     else
         level = 0x00
     end
 
-    flags = read_be(checksum_io, LZOPFlags)
+    flags = LZOPFlags(read_be(checksum_io, UInt32))
 
-    if flags & :H_FILTER
+    if :H_FILTER in flags
         filter = read_be(checksum_io, UInt32)
     else
         filter = 0x00000000
     end
 
     mode = read_be(checksum_io, UInt32)
-    if flags & :STDIN
+    if :STDIN in flags
         mode = 0x00000000
     end
 
     mtime_low = read_be(checksum_io, UInt32)
-    if version >= 0x0940
+    if version >= v"0.9.4"
         mtime_high = read_be(checksum_io, UInt32)
     else
         mtime_high = 0x00000000
     end
-    if version < 0x0120
-        mtime_high = 0x00000000
-        if mtime_low == typemax(UInt32)
-            mtime_low = 0x00000000
-        end
-    end
+    # this can never happen
+    # if version < v"0.1.2"
+    #     mtime_high = 0x00000000
+    #     if mtime_low == typemax(UInt32)
+    #         mtime_low = 0x00000000
+    #     end
+    # end
 
     name_length = read_be(checksum_io, UInt8)
     if name_length > 0
@@ -284,14 +285,14 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     end
 
     # checksum has been computed
-    checksum = (flags & :H_CRC32) ? checksum_io.crc : checksum_io.adler
+    checksum = (:H_CRC32 in flags) ? checksum_io.crc : checksum_io.adler
     header_checksum = read_be(checksum_io, UInt32)
     if checksum != header_checksum
-        throw(ErrorException("header checksum does not match: expected $header_checksum (H_CRC32=$(flags & :H_CRC32)), read $checksum"))
+        throw(ErrorException("header checksum does not match: expected $header_checksum (H_CRC32=$(:H_CRC32 in flags)), read $checksum"))
     end
 
     # extra data is not used, but we check it anyway
-    if flags & :H_EXTRA_FIELD
+    if :H_EXTRA_FIELD in flags
         # reset the checksum calculation
         reset_checksum!(checksum_io)
 
@@ -303,9 +304,9 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
         end
 
         extra_field_checksum = read_be(checksum_io, UInt32)
-        extra_checksum = (flags & :H_CRC32) ? checksum_io.crc : checksum_io.adler
+        extra_checksum = (:H_CRC32 in flags) ? checksum_io.crc : checksum_io.adler
         if extra_checksum != extra_field_checksum
-            throw(ErrorException("extra field checksum does not match: expected $extra_field_checksum (H_CRC32=$(flags & :H_CRC32)), read $extra_checksum"))
+            throw(ErrorException("extra field checksum does not match: expected $extra_field_checksum (H_CRC32=$(:H_CRC32 in flags)), read $extra_checksum"))
         end
     else
         extra = Vector{UInt8}(undef, 0)
@@ -313,10 +314,6 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     end
 
     # post-compute the objects in the header
-    v_version = translate_version(version)
-    v_lib_version = translate_version(lib_version)
-    v_version_needed_to_extract = translate_version(version_needed_to_extract)
-
     lzo_method = translate_method(method, level)
 
     lzo_filter = translate_filter(filter)
@@ -324,9 +321,9 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     mtime = translate_mtime(mtime_low, mtime_high)
 
     return LZOPArchiveHeader{lzo_method, lzo_filter}(
-        v_version,
-        v_lib_version,
-        v_version_needed_to_extract,
+        version,
+        lib_version,
+        version_needed_to_extract,
         lzo_method,
         flags,
         lzo_filter,
