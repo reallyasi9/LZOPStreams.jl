@@ -66,61 +66,32 @@ end
     extra_field::Vector{UInt8} = Vector{UInt8}(undef, 0) # not used
 end
 
+"""
+    write_be(io, value) -> Int
 
-mutable struct ChecksumWrapper{T <: IO} <: IO
-    io::T
-    crc::UInt32
-    adler::UInt32
+    Write `value` to `io` in "big-endian" (network) byte order.
+"""
+write_be(io::IO, x) = write(io, hton(x))
 
-    function ChecksumWrapper(io::T) where (T <: IO)
-        return new{T}(io, 0x00000000, 0x00000001)
-    end
-end
+"""
+    read_through_be(src, dest, T) -> value::T
 
-function read_be(cr::ChecksumWrapper, ::Type{T}) where (T <: Integer)
-    value = read(cr.io, T)
-    cr.crc = crc32(collect(reinterpret(UInt8, [value])), cr.crc)
-    cr.adler = adler32(value, cr.adler)
+    Read a value of type 'T' from 'src', copying it _verbatim_ to 'dest' and returning the value _converted_ to host byte order from "big-endian" (network) byte order.
+"""
+function read_through_be(src::IO, dest::IO, T::Type)
+    value = read(src, T)
+    write(dest, value)
     return ntoh(value)
 end
 
-function read_bytes(cr::ChecksumWrapper, n::Integer)
-    value = Vector{UInt8}(undef, n)
-    nr = readbytes!(cr.io, value, n)
-    if nr != n
-        throw(ErrorException("unable to read bytes from IO: exepected to read $n, read $nr"))
-    end
-    cr.crc = crc32(value, cr.crc)
-    cr.adler = adler32(ntoh(value), cr.adler)
-    return value
-end
-
-function write_be(cr::ChecksumWrapper, value::T) where (T <: Integer)
-    val = hton(value)
-    cr.crc = crc32(collect(reinterpret(UInt8, [val])), cr.crc)
-    cr.adler = adler32(val, cr.adler)
-    return write(cr.io, val)
-end
-
-function write_bytes(cr::ChecksumWrapper, bytes::AbstractVector{UInt8})
-    cr.crc = crc32(bytes, cr.crc)
-    cr.adler = adler32(bytes, cr.adler)
-    return write(cr.io, bytes)
-end
-
-function reset_checksum!(cr::ChecksumWrapper)
-    cr.crc = 0x00000000
-    cr.adler = 0x00000001
-    return cr
-end
-
-
 """
-    clean_filename(name) -> String
+    clean_name(name) -> String
 
     Convert a file name to LZOP's cannonical representation.
 
 LZOP's cannonical represention of a file name is one that removes all drive and root path information, normalizes relative traversals within the path (i.e., "." and ".."), and enforces forward slash ('/') as the directory separator.
+
+Note that LZOP has the facilities to understand path string encodings, but the official version does not use them and simply uses the native representation on the machine that is compressing/decompressing the file.
 """
 function clean_name(name::AbstractString)
     drive_path = splitdrive(name)
@@ -135,8 +106,15 @@ function clean_name(name::AbstractString)
     return join(splits, "/")
 end
 
+"""
+    translate_method(method::UInt8, level::UInt8) -> AbstractLZOAlgorithm
+
+    Translate the encoded `method` and `level` bytes from an LZOP header to an LZO algorithm.
+
+`level` is ignored for all algorithms except for LZO1X_999.
+"""
 function translate_method(method::UInt8, level::UInt8)::AbstractLZOAlgorithm
-    if method ∉ (M_LZO1X_1, M_LZO1X_1_15, M_LZO1X_999)
+    if method ∉ UInt8.((M_LZO1X_1, M_LZO1X_1_15, M_LZO1X_999))
         throw(ErrorException("unrecognized LZO method: $method"))
     end
     if level > 9
@@ -145,33 +123,41 @@ function translate_method(method::UInt8, level::UInt8)::AbstractLZOAlgorithm
 
     # set default level based on method used
     # NOTE: levels for LZO1X_1 and LZO1X_1_15 are not used
-    if level == 0
-        if method == M_LZO1X_1
-            level = 0x03
-        elseif method == M_LZO1X_1_15
-            level = 0x01
-        elseif method == M_LZO1X_999
-            level = 0x09
-        end
+    if level == 0 && method == UInt8(M_LZO1X_999)
+        level = 0x09
     end
 
-    method == M_LZO1X_1 && return LZO1X_1()
-    method == M_LZO1X_1_15 && return LZO1X_1_15()
-    method == M_LZO1X_999 && return LZO1X_999(level)
+    method == UInt8(M_LZO1X_1) && return LZO1X_1()
+    method == UInt8(M_LZO1X_1_15) && return LZO1X_1_15()
+    method == UInt8(M_LZO1X_999) && return LZO1X_999(compression_level=level)
 end
 
-# Note: return method, level to be read as separate 8-bit integers (ignore byte order)
-function translate_method(::LZO1X_1)
-    return UInt16(M_LZO1X_1) << 8 | 0x0003
+"""
+    translate_method(algorithm, [level::Integer]) -> (method,level)
+
+    Translate the given `AbstractLZOAlgorithm` to LZOP-encoded method and level bytes for writing to an LZOP header.
+
+If `level` is given, that level will overwrite the defaulf value for the algorithm.
+"""
+function translate_method(::LZO1X_1, level::Integer = 0x03)
+    if level > 9
+        throw(ErrorException("invalid LZO compression level: $level"))
+    end
+    return UInt8(M_LZO1X_1), UInt8(level)
 end
 
-function translate_method(::LZO1X_1_15)
-    return UInt16(M_LZO1X_1_15) << 8 | 0x0001
+function translate_method(::LZO1X_1_15, level::Integer = 0x01)
+    if level > 9
+        throw(ErrorException("invalid LZO compression level: $level"))
+    end
+    return UInt8(M_LZO1X_1_15), UInt8(level)
 end
 
-function translate_method(m::LZO1X_999)
-    level = UInt16(m.compression_level)
-    return UInt16(M_LZO1X_999) << 8 | level
+function translate_method(m::LZO1X_999, level::Integer = UInt8(m.compression_level))
+    if level > 9
+        throw(ErrorException("invalid LZO compression level: $level"))
+    end
+    return UInt8(M_LZO1X_999), UInt8(level)
 end
 
 
@@ -185,36 +171,66 @@ function translate_version(ver::UInt16)
     minor = (ver & (0x0f00)) >> 8
     patch = (ver & (0x00f0)) >> 4
     prerelease = (ver & (0x000f))
-    return VersionNumber(major, minor, patch, (prerelease,))
+    prerelease_tuple = prerelease == 0 ? () : (prerelease,)
+    return VersionNumber(major, minor, patch, prerelease_tuple)
 end
 
+"""
+    translate_version(ver::VersionNumber) -> UInt16
+
+    Convert a semver VersionNumber to LZO/LZOP's version format.
+"""
 function translate_version(ver::VersionNumber)
-    return UInt16(((ver.major & 0xf) << 12) | ((ver.minor & 0xf) << 8) | (ver.patch & 0xf << 4) | (isempty(ver.prerelease) ? 0x0 : first(ver.prerelease) & 0xf))
+    return UInt16(((ver.major & 0xf) << 12) | ((ver.minor & 0xf) << 8) | ((ver.patch & 0xf) << 4) | (isempty(ver.prerelease) ? 0x0 : first(ver.prerelease) & 0xf))
 end
 
+"""
+    translate_filter(f::UInt32) -> AbstractLZOPFilter
+
+    Translate an encoded LZOP filter code to an `AbstractLZOPFilter` struct.
+"""
 function translate_filter(f::UInt32)::AbstractLZOPFilter
     # Note: there is no way to specify use of the move-to-front filter, even though the filter is defined in the official LZOP code.
     if f == 0 || f > 16
         return NoopFilter()
     else
-        return ModuloSumFilter{f}()
+        N = Int(f)
+        return ModuloSumFilter{N}()
     end
 end
 
+"""
+    translate_filter(f::AbstractLZOPFilter) -> UInt32
+
+    Translate an `AbstractLZOPFilter` struct to an encoded LZOP filter code.
+"""
 function translate_filter(::ModuloSumFilter{N}) where (N)
     return UInt32(N)
 end
 
+function translate_filter(::NoopFilter)
+    return zero(UInt32)
+end
+
+"""
+    translate_mtime(low::UInt32, high::UInt32) -> DateTime
+
+    Translate an encoded low/high number of seconds to a DateTime.
+"""
 function translate_mtime(low::UInt32, high::UInt32)
     return Dates.unix2datetime((UInt64(high) << 32) | UInt64(low))
 end
 
-# Two BE 32-bit ints written as a single BE 64-bit int, so low comes first
+"""
+    translate_mtime(mtime::DateTime) -> (low,high)
+
+    Translate a DateTime an encoded low/high number of seconds.
+"""
 function translate_mtime(mtime::DateTime)
     seconds = round(UInt64, Dates.datetime2unix(mtime))
-    low = UInt64(seconds & 0xffffffff)
-    high = UInt64(seconds >> 32)
-    return (low << 32) | high
+    low = UInt32(seconds & 0xffffffff)
+    high = UInt32(seconds >> 32)
+    return low, high
 end
 
 function Base.read(io::IO, ::Type{LZOPArchiveHeader})

@@ -1,4 +1,4 @@
-module CodecLZOP
+module LZOPStreams
 
 using LibLZO:
     max_compressed_length,
