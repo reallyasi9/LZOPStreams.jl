@@ -52,35 +52,70 @@ end
     M_LZO1X_999 = 0x03
 end
 
-@kwdef struct LZOPArchiveHeader{M <: AbstractLZOAlgorithm, F <: AbstractLZOPFilter}
-    version::VersionNumber = LZOP_VERSION_NUMBER
-    lib_version::VersionNumber = LZO_LIB_VERSION_NUMBER
-    version_needed_to_extract::VersionNumber = LZOP_MIN_VERSION_NUMBER
+"""
+    LZOPFileHeader
+
+    A struct that represents the data stored at the head of each file entry in an LZOP archive.
+
+There is no official documentation for the structure of the LZOP file header: this implementation was reverse-engineered from the open-source LZOP code. The data stored in the LZOP file header appears to be dependenant on the version of LZOP that was used to encode it. The table below describes what is present in each of the versions of the header. All word values (integer values of byte length > 1) are stored in network ("big endian", or MSB first) format.
+
+| Value | Number of bytes | Description | Starting byte (v0.1.2) | Starting byte (v0.9.0) | Starting byte (v0.9.4+) |
+|:---:|:---:|:----|:---:|:---:|:---:|
+| `version` | 2 | Version of LZOP program used to encode the header | 1 | 1 | 1 |
+| `lib_version` | 2 | Version of LZO library used to compress the data | 3 | 3 | 3 |
+| `version_needed_to_extract` | 2 | Minimum version of LZOP program needed to correctly extract the file | - | - | 5 |
+| `method` | 1 | Compression method used to compress data | 5 | 5 | 7 |
+| `level` | 1 | Compression level used to compress data | - | - | 8 |
+| `flags` | 4 | Bit set of options used to compress data | 6 | 6 | 9 |
+| `mode` | 4 | File mode to be applied to the file after decompressing data | 10 | 10 | 13 |
+| `mtime_low` | 4 | File modified time in seconds since Unix epoch (low bytes) | 14 | 14 | 17 |
+| `mtime_high` | 4 | File modified time in seconds since Unix epoch (high bytes) | - | 18 | 21 |
+| `name_length` | 1 | Length of file name in bytes | 18 | 22 | 25 |
+| `name` | `name_length` | File name | 19 | 23 | 26 |
+| `checksum` | 4 | CRC-32 or Adler-32 checksum of all bytes read from the header so far | `19 + name_length` | `23 + name_length` | `25 + name_length` |
+
+The `name` field encodes the name of the file at the time of compression. Because it is a single byte, the file name is truncated to the first 255 bytes. The name is stored in Julia native format (UTF-8) by default.
+
+If `flags & 0x800 != 0`, then a 4-byte "filter" field follows the "flag" field. It describes the reversible filter used when compressing the data.
+
+If `flags & 0x40 != 0`, then an additional "extra field" is appended to the header. This extra field has the following byte layout:
+
+| Value | Number of bytes | Description | Starting byte after header |
+|:---:|:---:|:----|:---:|
+| `extra_length` | 4 | Length of extra field | 1 |
+| `data` | `extra_length` | Extra data | 5 |
+| `checksum` | 4 | CRC-32 or Adler-32 checksum of all extra field bytes including the length | `5 + extra_length` |
+
+The checksum that is used in both the header and the extra field is determined one of the bit flags: if `flags & 0x1000 != 0`, then CRC-32 is used; otherwise, Adler-32 is used.
+"""
+@kwdef struct LZOPFileHeader{M <: AbstractLZOAlgorithm, F <: AbstractLZOPFilter}
+    version::UInt16 = LZOP_VERSION
+    lib_version::UInt16 = LZO_LIB_VERSION
+    version_needed_to_extract::UInt16 = LZOP_MIN_VERSION
     method::M = M()
     flags::LZOPFlags = typemin(LZOPFlags)
     filter::F = F()
     mode::UInt32 = 0o0000
     mtime::DateTime = unix2datetime(0)
 
-    name::String255 = "" # unnamed means using STDIN/STDOUT
+    name::String = "" # unnamed means using STDIN/STDOUT
     extra_field::Vector{UInt8} = Vector{UInt8}(undef, 0) # not used
 end
 
 """
-    write_be(io, value) -> Int
+    write_be(io, value...) -> Int
 
     Write `value` to `io` in "big-endian" (network) byte order.
 """
-write_be(io::IO, x) = write(io, hton(x))
+write_be(io::IO, x...) = write(io, hton.(x)...)
 
 """
-    read_through_be(src, dest, T) -> value::T
+    read_be(src, T) -> value::T
 
-    Read a value of type 'T' from 'src', copying it _verbatim_ to 'dest' and returning the value _converted_ to host byte order from "big-endian" (network) byte order.
+    Read a value of type 'T' from 'src', returning the value _converted_ to host byte order from "big-endian" (network) byte order.
 """
-function read_through_be(src::IO, dest::IO, T::Type)
+function read_be(src::IO, T::Type)
     value = read(src, T)
-    write(dest, value)
     return ntoh(value)
 end
 
@@ -96,6 +131,9 @@ Note that LZOP has the facilities to understand path string encodings, but the o
 function clean_name(name::AbstractString)
     drive_path = splitdrive(name)
     norm_path = normpath(drive_path[2])
+    if isempty(name)
+        return ""
+    end
     if isdirpath(norm_path)
         throw(ErrorException("path appears to be a directory: $name"))
     end
@@ -160,30 +198,6 @@ function translate_method(m::LZO1X_999, level::Integer = UInt8(m.compression_lev
     return UInt8(M_LZO1X_999), UInt8(level)
 end
 
-
-"""
-    translate_version(ver::UInt16) -> VersionNumber
-
-    Convert LZO/LZOP's version format to a semver VersionNumber.
-"""
-function translate_version(ver::UInt16)
-    major = (ver & (0xf000)) >> 12
-    minor = (ver & (0x0f00)) >> 8
-    patch = (ver & (0x00f0)) >> 4
-    prerelease = (ver & (0x000f))
-    prerelease_tuple = prerelease == 0 ? () : (prerelease,)
-    return VersionNumber(major, minor, patch, prerelease_tuple)
-end
-
-"""
-    translate_version(ver::VersionNumber) -> UInt16
-
-    Convert a semver VersionNumber to LZO/LZOP's version format.
-"""
-function translate_version(ver::VersionNumber)
-    return UInt16(((ver.major & 0xf) << 12) | ((ver.minor & 0xf) << 8) | ((ver.patch & 0xf) << 4) | (isempty(ver.prerelease) ? 0x0 : first(ver.prerelease) & 0xf))
-end
-
 """
     translate_filter(f::UInt32) -> AbstractLZOPFilter
 
@@ -233,28 +247,29 @@ function translate_mtime(mtime::DateTime)
     return low, high
 end
 
-function Base.read(io::IO, ::Type{LZOPArchiveHeader})
+function Base.read(io::IO, ::Type{LZOPFileHeader})
     # until flags are read, we don't know whether CRC32 or Adler32 should be used.
-    checksum_io = ChecksumWrapper(io)
+    checksum_io = BufferedInputStream(io)
+    anchor!(checksum_io)
     
-    version = translate_version(read_be(checksum_io, UInt16))
-    if version < LZOP_MIN_VERSION_NUMBER
-        throw(ErrorException("archive was created with an unreleased version of lzop: $version < $LZOP_MIN_VERSION_NUMBER"))
+    version = read_be(checksum_io, UInt16)
+    if version < LZOP_MIN_VERSION
+        throw(ErrorException("archive was created with an unreleased version of lzop: $version < $LZOP_MIN_VERSION"))
     end
-    lib_version = translate_version(read_be(checksum_io, UInt16))
-    version_needed_to_extract = v"0"
-    if version >= v"0.9.4"
-        version_needed_to_extract = translate_version(read_be(checksum_io, UInt16))
-        if version_needed_to_extract > LZOP_VERSION_NUMBER
-            throw(ErrorException("version needed to extract archive is greater than this version understands: $version_needed_to_extract > $LZOP_VERSION_NUMBER"))
+    lib_version = read_be(checksum_io, UInt16)
+    version_needed_to_extract = zero(UInt16)
+    if version >=0x0940
+        version_needed_to_extract = read_be(checksum_io, UInt16)
+        if version_needed_to_extract > LZOP_VERSION
+            throw(ErrorException("version needed to extract archive is greater than this version understands: $version_needed_to_extract > $LZOP_VERSION"))
         end
-        if version_needed_to_extract < LZOP_MIN_VERSION_NUMBER
-            throw(ErrorException("version needed to extract archive is an unreleased version of lzop: $version_needed_to_extract < $LZOP_MIN_VERSION_NUMBER"))
+        if version_needed_to_extract < LZOP_MIN_VERSION
+            throw(ErrorException("version needed to extract archive is an unreleased version of lzop: $version_needed_to_extract < $LZOP_MIN_VERSION"))
         end
     end
 
     method = read_be(checksum_io, UInt8)
-    if version >= v"0.9.4"
+    if version >= 0x0940
         level = read_be(checksum_io, UInt8)
     else
         level = 0x00
@@ -274,7 +289,7 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     end
 
     mtime_low = read_be(checksum_io, UInt32)
-    if version >= v"0.9.4"
+    if version >= 0x0940
         mtime_high = read_be(checksum_io, UInt32)
     else
         mtime_high = 0x00000000
@@ -300,8 +315,9 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
         name = ""
     end
 
-    # checksum has been computed
-    checksum = (:H_CRC32 in flags) ? checksum_io.crc : checksum_io.adler
+    # checksum up until now has to be computed
+    raw_header_data = takeanchored!(checksum_io)
+    checksum = (:H_CRC32 in flags) ? crc32(raw_header_data) : adler32(raw_header_data)
     header_checksum = read_be(checksum_io, UInt32)
     if checksum != header_checksum
         throw(ErrorException("header checksum does not match: expected $header_checksum (H_CRC32=$(:H_CRC32 in flags)), read $checksum"))
@@ -310,7 +326,7 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
     # extra data is not used, but we check it anyway
     if :H_EXTRA_FIELD in flags
         # reset the checksum calculation
-        reset_checksum!(checksum_io)
+        anchor!(checksum_io)
 
         extra_length = read_be(checksum_io, UInt32)
         if extra_length > 0
@@ -319,8 +335,9 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
             extra = Vecotr{UInt8}(undef, 0)
         end
 
+        raw_extra_data = takeanchored!(checksum_io)
+        extra_checksum = (:H_CRC32 in flags) ? crc32(raw_extra_data) : adler32(raw_extra_data)
         extra_field_checksum = read_be(checksum_io, UInt32)
-        extra_checksum = (:H_CRC32 in flags) ? checksum_io.crc : checksum_io.adler
         if extra_checksum != extra_field_checksum
             throw(ErrorException("extra field checksum does not match: expected $extra_field_checksum (H_CRC32=$(:H_CRC32 in flags)), read $extra_checksum"))
         end
@@ -336,7 +353,7 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
 
     mtime = translate_mtime(mtime_low, mtime_high)
 
-    return LZOPArchiveHeader{lzo_method, lzo_filter}(
+    return LZOPFileHeader(
         version,
         lib_version,
         version_needed_to_extract,
@@ -346,45 +363,65 @@ function Base.read(io::IO, ::Type{LZOPArchiveHeader})
         mode,
         mtime,
         name,
-        extra_field,
+        extra,
     )
 end
 
-function Base.write(io::IO, header::LZOPArchiveHeader)
-    checksum_io = ChecksumWrapper(io)
+function Base.write(io::IO, header::LZOPFileHeader)
+    # write everything to a buffer first to allow for checksum calculation
+    checksum_io = IOBuffer()
 
     nb = 0
 
-    nb += write_be(checksum_io, translate_version(header.version))
-    nb += write_be(checksum_io, translate_version(header.lib_version))
-    nb += write_be(checksum_io, translate_version(header.version_needed_to_extract))
-    nb += write_be(checksum_io, translate_method(header.method)) # note: includes level
+    nb += write_be(checksum_io, header.version)
+    nb += write_be(checksum_io, header.lib_version)
+    if header.version >= 0x0940
+        nb += write_be(checksum_io, header.version_needed_to_extract)
+    end
+    method, level = translate_method(header.method)
+    nb += write_be(checksum_io, method)
+    if header.version >= 0x0940
+        nb += write_be(checksum_io, level)
+    end
     nb += write_be(checksum_io, UInt32(header.flags))
     if :H_FILTER in header.flags
         nb += write_be(checksum_io, translate_filter(header.filter))
     end
     nb += write_be(checksum_io, header.mode)
-    nb += write_be(checksum_io, translate_mtime(header.mtime)) # note: writes both low and high bytes
-    nb += write_be(checksum_io, UInt8(length(header.name)))
-    if length(header.name) > 0
-        nb += write_bytes(checksum_io, codeunits(header.name))
+    mtime_low, mtime_high = translate_mtime(header.mtime)
+    nb += write_be(checksum_io, mtime_low)
+    if header.version >= 0x0120
+        nb += write_be(checksum_io, mtime_high)
     end
-    if :H_CRC32 in header.flags
-        nb += write_be(checksum_io, checksum_io.crc)
-    else
-        nb += write_be(checksum_io, checksum_io.adler)
+    truncated_name = clean_name(header.name)
+    name_length = min(length(truncated_name) % UInt8, typemax(UInt8))
+    nb += write_be(checksum_io, name_length)
+    if name_length > 0
+        nb += write(checksum_io, codeunits(header.name))
     end
+
+    raw_data = take!(checksum_io)
+    checksum = (:H_CRC32 in header.flags) ? crc32(raw_data) : adler32(raw_data)
+
+    nb_check = write(io, raw_data)
+    if nb != nb_check
+        throw(ErrorException("byte check failure: expected to write $nb bytes, wrote $nb_check"))
+    end
+
+    nb += write_be(io, checksum)
 
     if :H_EXTRA_FIELD in header.flags
-        reset!(checksum_io)
+        checksum_io = IOBuffer()
 
         nb += write_be(checksum_io, UInt32(length(header.extra_field)))
-        nb += write_bytes(checksum_io, extra.header_field)
-        if :H_CRC32 in header.flags
-            nb += write_be(checksum_io, checksum_io.crc)
-        else
-            nb += write_be(checksum_io, checksum_io.adler)
-        end
+        nb += write(checksum_io, extra.header_field)
+
+        raw_extra_data = take!(checksum_io)
+        extra_checksum = (:H_CRC32 in header.flags) ? crc32(raw_extra_data) : adler32(raw_extra_data)
+
+        write(io, raw_extra_data)
+
+        nb += write_be(io, extra_checksum)
     end
 
     return nb

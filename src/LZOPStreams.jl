@@ -21,19 +21,17 @@ using CRC32:
 
 using Dates
 
-using InlineStrings:
-    String255
-
 using FlagSets
+
+using BufferedStreams
 
 @static if VERSION < v"1.7"
     include("compat.jl")
 end
 
-const LZO_LIB_VERSION = version()
-const LZO_LIB_VERSION_NUMBER = VersionNumber(LZO_LIB_VERSION >> 12, (LZO_LIB_VERSION >> 8) & 0xf, (LZO_LIB_VERSION >> 4) & 0xf, (LZO_LIB_VERSION & 0xf,))
-const LZOP_VERSION_NUMBER = VersionNumber(1, 3, 0, (0,))
-const LZOP_MIN_VERSION_NUMBER = VersionNumber(0, 9, 0, (0,))
+const LZO_LIB_VERSION = UInt16(version())
+const LZOP_VERSION = 0x1300
+const LZOP_MIN_VERSION = 0x0900
 
 include("lzop_filter.jl")
 include("lzop_header.jl")
