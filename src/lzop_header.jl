@@ -1,21 +1,23 @@
 @flagset LZOPFlags {Symbol, UInt32} begin
-    0x1 --> :ADLER32_D
-    0x2 --> :ADLER32_C
+    0x1 --> :ADLER32_D # mutually exclusive with CRC32_D
+    0x2 --> :ADLER32_C # mutually exclusive with CRC32_C
     0x4 --> :STDIN
     0x8 --> :STDOUT
     0x10 --> :NAME_DEFAULT
     0x20 --> :DOSISH
-    0x40 --> :H_EXTRA_FIELD
-    0x80 --> :H_GMTDIFF
-    0x100 --> :CRC32_D
-    0x200 --> :CRC32_C
+    0x40 --> :H_EXTRA_FIELD # not used in reference code
+    0x80 --> :H_GMTDIFF # not used in reference code
+    0x100 --> :CRC32_D # mutually exclusive with ADLER32_D
+    0x200 --> :CRC32_C # mutually exclusive with ADLER32_C
     0x400 --> :MULTIPART
     0x800 --> :H_FILTER
     0x1000 --> :H_CRC32
     0x2000 --> :H_PATH
 end
 
-@enum LZOPOS begin
+# The reference code names these with the prefix "OS", which is preserved here, but these actually enumerate filesystems and not operating systems.
+# The reference code defines these values but does not use them.
+@enum LZOPFileSystem begin
     OS_FAT = 0
     OS_AMIGA = 0x01000000
     OS_VMS = 0x02000000
@@ -34,8 +36,10 @@ end
     OS_MFS = 0x0f000000
     OS_BEOS = 0x10000000
     OS_TANDEM = 0x11000000
+    OS_MASK = 0xff000000
 end
 
+# The reference code defines these values but does not use them.
 @enum LZOPCharacterSet begin
     CS_NATIVE = 0x00000000
     CS_LATIN1 = 0x00100000
@@ -43,9 +47,28 @@ end
     CS_WIN32 = 0x00300000
     CS_WIN16 = 0x00400000
     CS_UTF8 = 0x00500000
+    CS_MASK = 0x00f00000
 end
 
-# LZOP only allows three methods for LZO compresison
+const ENCODING_LOOKUP = Dict{UInt32, String}(
+    CS_NATIVE => "UTF-8",
+    CS_LATIN1 => "LATIN1",
+    CS_DOS => "CP437",
+    CS_WIN32 => "UTF-32LE",
+    CS_WIN16 => "UTF-16LE",
+    CS_UTF8 => "UTF-8",
+)
+
+const CODEPAGE_LOOKUP = Dict{String, UInt32}(
+    "UTF-8" => CS_NATIVE,
+    "LATIN1" => CS_LATIN1,
+    "CP437" => CS_DOS,
+    "UTF-32LE" => CS_WIN32,
+    "UTF-16LE" => CS_WIN16,
+    "UTF-8" => CS_UTF8,
+)
+
+# The reference code only allows three methods for LZO compresison.
 @enum LZOPMethod begin
     M_LZO1X_1 = 0x01
     M_LZO1X_1_15 = 0x02
@@ -60,7 +83,7 @@ end
 There is no official documentation for the structure of the LZOP file header: this implementation was reverse-engineered from the open-source LZOP code. The data stored in the LZOP file header appears to be dependenant on the version of LZOP that was used to encode it. The table below describes what is present in each of the versions of the header. All word values (integer values of byte length > 1) are stored in network ("big endian", or MSB first) format.
 
 | Value | Number of bytes | Description | Starting byte (v0.1.2) | Starting byte (v0.9.0) | Starting byte (v0.9.4+) |
-|:---:|:---:|:----|:---:|:---:|:---:|
+|----:|:----|:----|:----|:----|:----|
 | `version` | 2 | Version of LZOP program used to encode the header | 1 | 1 | 1 |
 | `lib_version` | 2 | Version of LZO library used to compress the data | 3 | 3 | 3 |
 | `version_needed_to_extract` | 2 | Minimum version of LZOP program needed to correctly extract the file | - | - | 5 |
@@ -81,7 +104,7 @@ If `flags & 0x800 != 0`, then a 4-byte "filter" field follows the "flag" field. 
 If `flags & 0x40 != 0`, then an additional "extra field" is appended to the header. This extra field has the following byte layout:
 
 | Value | Number of bytes | Description | Starting byte after header |
-|:---:|:---:|:----|:---:|
+|----:|:----|:----|:----|
 | `extra_length` | 4 | Length of extra field | 1 |
 | `data` | `extra_length` | Extra data | 5 |
 | `checksum` | 4 | CRC-32 or Adler-32 checksum of all extra field bytes including the length | `5 + extra_length` |
@@ -112,7 +135,7 @@ write_be(io::IO, x...) = write(io, hton.(x)...)
 """
     read_be(src, T) -> value::T
 
-    Read a value of type 'T' from 'src', returning the value _converted_ to host byte order from "big-endian" (network) byte order.
+    Read a value of type 'T' from 'src', returning the value converted to host byte order from "big-endian" (network) byte order.
 """
 function read_be(src::IO, T::Type)
     value = read(src, T)
@@ -126,7 +149,7 @@ end
 
 LZOP's cannonical represention of a file name is one that removes all drive and root path information, normalizes relative traversals within the path (i.e., "." and ".."), and enforces forward slash ('/') as the directory separator.
 
-Note that LZOP has the facilities to understand path string encodings, but the official version does not use them and simply uses the native representation on the machine that is compressing/decompressing the file.
+Note that LZOP has the facilities to understand path string encodings, but the reference code simply uses the native representation on the machine that is compressing/decompressing the file.
 """
 function clean_name(name::AbstractString)
     drive_path = splitdrive(name)
@@ -294,18 +317,18 @@ function Base.read(io::IO, ::Type{LZOPFileHeader})
     else
         mtime_high = 0x00000000
     end
-    # this can never happen
-    # if version < v"0.1.2"
-    #     mtime_high = 0x00000000
-    #     if mtime_low == typemax(UInt32)
-    #         mtime_low = 0x00000000
-    #     end
-    # end
+    # this can never happen because we require version to be >= 0x0900
+    if version < 0x0120
+        mtime_high = 0x00000000
+        if mtime_low == typemax(UInt32)
+            mtime_low = 0x00000000
+        end
+    end
 
     name_length = read_be(checksum_io, UInt8)
     if name_length > 0
         name = String(read_bytes(checksum_io, name_length))
-        # Weirdly, this isn't an error
+        # Weirdly, the official code simply removes the name of the file if it reads an invalid name
         try
             name = clean_name(name)
         catch

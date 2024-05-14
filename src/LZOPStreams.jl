@@ -24,6 +24,7 @@ using Dates
 using FlagSets
 
 using BufferedStreams
+using StringEncodings
 
 @static if VERSION < v"1.7"
     include("compat.jl")
