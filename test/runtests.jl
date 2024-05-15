@@ -17,32 +17,44 @@ end
 end
 
 @testitem "clean_name" begin
-    tests = (
-        "empty name" => ("" => ""),
-        "short name" => ("hello" => "hello"),
-        "windows drive" => ("c:\\hello" => "hello"),
-        "unix root" => ("/hello" => "hello"),
-        "windows directories" => ("hello\\world\\windows" => "hello/world/windows"),
-        "unix directories" => ("hello/world/unix" => "hello/world/unix"),
-        "relative ." => ("hello/./world" => "hello/world"),
-        "relative .." => ("hello/../world" => "world"),
-        "empty unix directories" => ("hello//world" => "hello/world"),
-        "empty windows directories" => ("hello\\\\world" => "hello/world"),
+    unix_tests = (
+        "" => "",
+        "hello" => "hello",
+        "/hello" => "hello",
+        "hello/world/unix" => "hello/world/unix",
+        "hello/./world" => "hello/world",
+        "hello/../world" => "world",
+        "hello//world" => "hello/world",
     )
 
-    for test in tests
-        name = first(test)
-        values = last(test)
-        input = first(values)
-        expected = last(values)
+    # all unix-like path names should pass o nall systems
+    for test in unix_tests
+        input = first(test)
+        expected = last(test)
         @test LZOPStreams.clean_name(input) == expected
     end
 
     # things that look like directory names should throw
     @test_throws ErrorException LZOPStreams.clean_name("dir/")
     @test_throws ErrorException LZOPStreams.clean_name("/")
-    @test_throws ErrorException LZOPStreams.clean_name("windows\\dir\\")
-    @test_throws ErrorException LZOPStreams.clean_name("c:\\")
+
+    windows_tests = (
+        "c:\\hello" => "hello",
+        "hello\\world\\windows" => "hello/world/windows",
+        "hello\\\\world" => "hello/world",
+    )
+    if Sys.iswindows()
+        for test in windows_tests
+            input = first(test)
+            expected = last(test)
+            @test LZOPStreams.clean_name(input) == expected
+        end
+        @test_throws ErrorException LZOPStreams.clean_name("windows\\dir\\")
+        @test_throws ErrorException LZOPStreams.clean_name("c:\\")
+    else
+        @test LZOPStreams.clean_name("windows\\dir\\") == "windows\\dir\\"
+        LZOPStreams.clean_name("c:\\") == "c:\\"
+    end
 end
 
 @testitem "translate_method" begin
