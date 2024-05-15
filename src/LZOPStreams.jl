@@ -26,7 +26,7 @@ using FlagSets
 using BufferedStreams
 using StringEncodings
 
-@static if VERSION < v"1.7"
+@static if VERSION < v"1.9"
     include("compat.jl")
 end
 
