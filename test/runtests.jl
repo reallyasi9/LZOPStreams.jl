@@ -17,7 +17,7 @@ end
 end
 
 @testitem "clean_name" begin
-    unix_tests = (
+    all_tests = (
         "" => "",
         "hello" => "hello",
         "/hello" => "hello",
@@ -27,8 +27,7 @@ end
         "hello//world" => "hello/world",
     )
 
-    # all unix-like path names should pass o nall systems
-    for test in unix_tests
+    for test in all_tests
         input = first(test)
         expected = last(test)
         @test LZOPStreams.clean_name(input) == expected
@@ -38,22 +37,28 @@ end
     @test_throws ErrorException LZOPStreams.clean_name("dir/")
     @test_throws ErrorException LZOPStreams.clean_name("/")
 
-    windows_tests = (
-        "c:\\hello" => "hello",
-        "hello\\world\\windows" => "hello/world/windows",
-        "hello\\\\world" => "hello/world",
-    )
     if Sys.iswindows()
-        for test in windows_tests
-            input = first(test)
-            expected = last(test)
-            @test LZOPStreams.clean_name(input) == expected
-        end
+        tests = (
+            "c:\\hello" => "hello",
+            "hello\\world\\windows" => "hello/world/windows",
+            "hello\\\\world" => "hello/world",
+        )
         @test_throws ErrorException LZOPStreams.clean_name("windows\\dir\\")
         @test_throws ErrorException LZOPStreams.clean_name("c:\\")
     else
-        @test LZOPStreams.clean_name("windows\\dir\\") == "windows\\dir\\"
-        LZOPStreams.clean_name("c:\\") == "c:\\"
+        tests = (
+            "c:\\hello" => "c:\\hello",
+            "hello\\world\\windows" => "hello\\world\\windows",
+            "hello\\\\world" => "hello\\\\world",
+            "windows\\dir\\" => "windows\\dir\\",
+            "c:\\" => "c:\\",
+        )
+    end
+
+    for test in tests
+        input = first(test)
+        expected = last(test)
+        @test LZOPStreams.clean_name(input) == expected
     end
 end
 
