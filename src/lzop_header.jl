@@ -17,7 +17,7 @@ end
 
 # The reference code names these with the prefix "OS", which is preserved here, but these actually enumerate filesystems and not operating systems.
 # The reference code defines these values but does not use them.
-@enum LZOPFileSystem begin
+@enum LZOPFileSystem::UInt32 begin
     OS_FAT = 0
     OS_AMIGA = 0x01000000
     OS_VMS = 0x02000000
@@ -40,7 +40,7 @@ end
 end
 
 # The reference code defines these values but does not use them.
-@enum LZOPCharacterSet begin
+@enum LZOPCharacterSet::UInt32 begin
     CS_NATIVE = 0x00000000
     CS_LATIN1 = 0x00100000
     CS_DOS = 0x00200000
@@ -50,7 +50,7 @@ end
     CS_MASK = 0x00f00000
 end
 
-const ENCODING_LOOKUP = Dict{UInt32, String}(
+const ENCODING_LOOKUP = Dict{LZOPCharacterSet, String}(
     CS_NATIVE => "UTF-8",
     CS_LATIN1 => "LATIN1",
     CS_DOS => "CP437",
@@ -59,7 +59,7 @@ const ENCODING_LOOKUP = Dict{UInt32, String}(
     CS_UTF8 => "UTF-8",
 )
 
-const CODEPAGE_LOOKUP = Dict{String, UInt32}(
+const CODEPAGE_LOOKUP = Dict{String, LZOPCharacterSet}(
     "UTF-8" => CS_NATIVE,
     "LATIN1" => CS_LATIN1,
     "CP437" => CS_DOS,
@@ -69,7 +69,7 @@ const CODEPAGE_LOOKUP = Dict{String, UInt32}(
 )
 
 # The reference code only allows three methods for LZO compresison.
-@enum LZOPMethod begin
+@enum LZOPMethod::UInt8 begin
     M_LZO1X_1 = 0x01
     M_LZO1X_1_15 = 0x02
     M_LZO1X_999 = 0x03

@@ -8,23 +8,22 @@ using TestItemRunner
     @test take!(io) == UInt8[0x01, 0x02]
 end
 
-@testitem "read_through_be" begin
+@testitem "read_be" begin
     src = IOBuffer()
-    dest = IOBuffer()
     value = 0x0102
     write(src, hton(value))
     seekstart(src)
-    @test LZOPStreams.read_through_be(src, dest, UInt16) == 0x0102
-    @test take!(dest) == UInt8[0x01, 0x02]
+    @test LZOPStreams.read_be(src, UInt16) == 0x0102
 end
 
 @testitem "clean_name" begin
     tests = (
+        "empty name" => ("" => ""),
         "short name" => ("hello" => "hello"),
         "windows drive" => ("c:\\hello" => "hello"),
         "unix root" => ("/hello" => "hello"),
-        "windows directories" => ("hello\\world" => "hello/world"),
-        "unix directories" => ("hello/world" => "hello/world"),
+        "windows directories" => ("hello\\world\\windows" => "hello/world/windows"),
+        "unix directories" => ("hello/world/unix" => "hello/world/unix"),
         "relative ." => ("hello/./world" => "hello/world"),
         "relative .." => ("hello/../world" => "world"),
         "empty unix directories" => ("hello//world" => "hello/world"),
@@ -38,6 +37,12 @@ end
         expected = last(values)
         @test LZOPStreams.clean_name(input) == expected
     end
+
+    # things that look like directory names should throw
+    @test_throws ErrorException LZOPStreams.clean_name("dir/")
+    @test_throws ErrorException LZOPStreams.clean_name("/")
+    @test_throws ErrorException LZOPStreams.clean_name("windows\\dir\\")
+    @test_throws ErrorException LZOPStreams.clean_name("c:\\")
 end
 
 @testitem "translate_method" begin
@@ -75,13 +80,6 @@ end
         level = rand(0x01:0x09)
         @test LZOPStreams.translate_method(LZO1X_999(compression_level=level)) == (UInt8(LZOPStreams.M_LZO1X_999), UInt8(level))
     end
-end
-
-@testitem "translate_version" begin
-    @test LZOPStreams.translate_version(0x1234) == v"1.2.3-4"
-    @test LZOPStreams.translate_version(0xfed0) == v"15.14.13"
-    @test LZOPStreams.translate_version(v"4.5.6-7") == 0x4567
-    @test LZOPStreams.translate_version(v"12.11.10") == 0xcba0
 end
 
 @testitem "translate_filter" begin
