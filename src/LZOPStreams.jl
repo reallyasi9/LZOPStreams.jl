@@ -8,6 +8,9 @@ using LibLZO
 using SimpleChecksums
 using StringEncodings
 
+export LZOPArchiveSink, LZOPArchiveSource, LZOPFileHeader
+export next_file, create_file
+
 @static if VERSION < v"1.9"
     include("compat.jl")
 end
@@ -20,5 +23,6 @@ include("lzop_filter.jl")
 include("lzop_header.jl")
 include("lzop_block.jl")
 include("lzop_file.jl")
+include("lzop_archive.jl")
 
 end
