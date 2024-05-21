@@ -1,5 +1,5 @@
-const BLOCK_SIZE = 256*1024
-const LZOP_MAX_BLOCK_SIZE = 64*1024*1024
+const BLOCK_SIZE = 256 * 1024
+const LZOP_MAX_BLOCK_SIZE = 64 * 1024 * 1024
 
 """
     compress_block(input, output, algo; [kwargs...])::Tuple{Int,Int}
@@ -17,7 +17,7 @@ const LZOP_MAX_BLOCK_SIZE = 64*1024*1024
 """
 function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::AbstractLZOAlgorithm; crc32::Bool=false, filter::AbstractLZOPFilter=NoopFilter(), optimize::Bool=false)
     bytes_read = min(length(invec), LZOP_MAX_BLOCK_SIZE) % Int
-    
+
     bytes_written = zero(Int)
 
     # uncompressed length
@@ -31,7 +31,7 @@ function compress_block(invec::AbstractVector{UInt8}, output::IO, algo::Abstract
 
     # uncompressed checksum
     checksum = crc32 ? _crc32(input) : adler32(input)
-    
+
     # compressed length
     lzop_filter!(filter, input)
     compressed = compress(algo, input)
@@ -111,7 +111,7 @@ function decompress_block(input::IO, output::IO, algo::AbstractLZOAlgorithm; crc
 
     # error if larter than uncompressed length, irrespective of checksum fail flag
     compressed_length > uncompressed_length && throw(ErrorException("invalid LZOP block: uncompressed length less than compressed length ($uncompressed_length < $compressed_length)"))
-    
+
     uncompressed_checksum = ntoh(read(input, UInt32))
     bytes_read += 4
 
@@ -126,14 +126,14 @@ function decompress_block(input::IO, output::IO, algo::AbstractLZOAlgorithm; crc
     raw_data = Vector{UInt8}(undef, compressed_length)
     readbytes!(input, raw_data, compressed_length)
     bytes_read += compressed_length
-    
+
     if compressed_length != uncompressed_length
         if on_checksum_fail != :ignore
             checksum = crc32 ? _crc32(raw_data) : adler32(raw_data)
             if checksum != compressed_checksum
                 on_checksum_fail == :error && throw(ErrorException("invalid LZOP block: compressed checksum recorded in block does not equal computed checksum with crc32=$crc32 ($compressed_checksum != $checksum)"))
                 if on_checksum_fail == :warn
-                    @warn "invalid LZOP block: compressed checksum recorded in block does not equal computed checksum" crc32 recorded_checksum=compressed_checksum computed_checksum=checksum
+                    @warn "invalid LZOP block: compressed checksum recorded in block does not equal computed checksum" crc32 recorded_checksum = compressed_checksum computed_checksum = checksum
                 end
             end
         end
@@ -154,7 +154,7 @@ function decompress_block(input::IO, output::IO, algo::AbstractLZOAlgorithm; crc
         if checksum != uncompressed_checksum
             on_checksum_fail == :error && throw(ErrorException("invalid LZOP block: uncompressed checksum recorded in block does not equal computed checksum with crc32=$crc32 ($uncompressed_checksum != $checksum)"))
             if on_checksum_fail == :warn
-                @warn "invalid LZOP block: uncompressed checksum recorded in block does not equal computed checksum" crc32 recorded_checksum=uncompressed_checksum computed_checksum=checksum
+                @warn "invalid LZOP block: uncompressed checksum recorded in block does not equal computed checksum" crc32 recorded_checksum = uncompressed_checksum computed_checksum = checksum
             end
         end
     end

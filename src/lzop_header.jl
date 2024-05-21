@@ -214,7 +214,7 @@ function translate_method(::LZO1X_1_15, level::Integer = 0x01)
     return UInt8(M_LZO1X_1_15), UInt8(level)
 end
 
-function translate_method(m::LZO1X_999, level::Integer = UInt8(m.compression_level))
+function translate_method(m::LZO1X_999, level::Integer = UInt8(compression_level(m)))
     if level > 9
         throw(ErrorException("invalid LZO compression level: $level"))
     end
